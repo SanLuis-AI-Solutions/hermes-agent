@@ -5,6 +5,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tools.bot_desktop import placement
 from tools import browser_launcher as launcher
 from tools import browser_lightpanda as lp
 from tools import browser_session as bs
@@ -61,7 +62,7 @@ class TestLightpandaRequirements:
         monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
         monkeypatch.setattr(lp, "using_lightpanda_engine", lambda: engine_lightpanda)
         monkeypatch.setattr(bs_cloud, "is_local_backend", lambda: True)
-        monkeypatch.setattr(bs, "browser_in_sandbox", lambda: False)
+        monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
         monkeypatch.setattr(launcher, "chromium_ready", lambda: (False, "Chromium browser is missing."))
         monkeypatch.setattr(lp, "launch_lightpanda", lambda name, **kw: (_FakeServer(), None))
 

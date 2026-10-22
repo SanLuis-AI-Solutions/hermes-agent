@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+from tools.bot_desktop import placement
 from tools import browser_launcher as launcher
 from tools import browser_lightpanda
 from tools import browser_session as bs
@@ -30,7 +31,7 @@ def _no_running_real_profile_browser(monkeypatch):
 def _fresh_local_launch(monkeypatch) -> list:
     """The session layer's fresh-browser path with the launcher stubbed; returns ``(key, kwargs)`` per launch."""
     launches: list = []
-    monkeypatch.setattr(bs, "browser_in_sandbox", lambda: False)
+    monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
     monkeypatch.setattr(bs, "ensure_screen_for_headed_chromium", lambda: None)
     monkeypatch.setattr(browser_lightpanda, "using_lightpanda_engine", lambda: False)
     monkeypatch.setattr(launcher, "launch_chromium", lambda key, **kw: launches.append((key, kw)) or (

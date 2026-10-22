@@ -248,12 +248,6 @@ def get_cloud_provider() -> Optional[BrowserProvider]:
             return resolved
 
 
-def is_local_mode() -> bool:
-    """True when sessions run on a local browser (no CDP override, no cloud provider)."""
-    from tools.browser_session_cdp import get_cdp_override_raw
-    return not get_cdp_override_raw() and get_cloud_provider() is None
-
-
 def is_local_backend() -> bool:
     """True when the browser runs locally AND the terminal is local too.
 

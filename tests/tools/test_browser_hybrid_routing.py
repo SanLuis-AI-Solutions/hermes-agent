@@ -15,6 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from tools.bot_desktop import placement
 from tools import browser_launcher
 from tools import browser_session as bs
 from tools import browser_session_cloud as bs_cloud
@@ -34,7 +35,7 @@ def _reset_routing_state(monkeypatch):
     # Default: no CDP override
     monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: None)
     monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override_raw", lambda: "")
-    monkeypatch.setattr(bs, "browser_in_sandbox", lambda: False)
+    monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
     monkeypatch.setattr(browser_launcher, "launch_chromium",
                         lambda key, **kw: (SimpleNamespace(cdp_url=_LOCAL_CDP, pid=4242), None))
 

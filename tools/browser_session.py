@@ -25,7 +25,6 @@ from utils import env_int
 logger = logging.getLogger(__name__)
 
 LOCAL_SUFFIX = "::local"
-_LOCAL_SUFFIX = LOCAL_SUFFIX
 
 # Inactivity timeout: config.yaml is authoritative; BROWSER_INACTIVITY_TIMEOUT stays a legacy env fallback.
 DEFAULT_SESSION_INACTIVITY_TIMEOUT = int(DEFAULT_CONFIG.get("browser", {}).get("inactivity_timeout", 120))
@@ -122,13 +121,6 @@ def ensure_screen_for_headed_chromium() -> None:
     if is_headed_mode():
         from tools.bot_desktop.runtime import ensure_started_for_tool
         ensure_started_for_tool()
-
-
-def browser_in_sandbox() -> bool:
-    """The bot's browser runs INSIDE the terminal backend when its screen is PLACED there (policy, not
-    liveness: the host is never touched by a page the model chose, whether or not the screen is up)."""
-    from tools.bot_desktop import placement
-    return placement.resolve().where == placement.TERMINAL
 
 
 # ── Session records ──────────────────────────────────────────────────────────────────────────────────

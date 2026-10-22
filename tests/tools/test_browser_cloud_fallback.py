@@ -6,6 +6,7 @@ is configured but fails at runtime (issue #10883).
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from tools.bot_desktop import placement
 from tools import browser_launcher
 from tools import browser_session as bs
 from tools import browser_session_cloud as bs_cloud
@@ -19,7 +20,7 @@ def _reset_session_state(monkeypatch):
     monkeypatch.setattr("tools.browser_session_lifecycle.start_cleanup_thread", lambda: None)
     monkeypatch.setattr("tools.browser_session_lifecycle.update_session_activity", lambda t: None)
     monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda task_id: None)
-    monkeypatch.setattr(bs, "browser_in_sandbox", lambda: False)
+    monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
     monkeypatch.setattr(browser_launcher, "launch_chromium",
                         lambda key, **kw: (SimpleNamespace(cdp_url=_LOCAL_CDP, pid=4242), None))
 
