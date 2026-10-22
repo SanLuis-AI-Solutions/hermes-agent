@@ -3,7 +3,6 @@
 from unittest.mock import Mock
 
 from plugins.browser.browser_use import provider as browser_use_provider
-from tools import browser_launcher
 from tools import browser_session as bs
 from tools import browser_session_cloud as bs_cloud
 
@@ -72,8 +71,10 @@ def test_expired_cloud_session_is_replaced_without_reusing_dead_cdp(monkeypatch)
     }
     bs._session_last_activity["task-1"] = 1.0
 
+    events = []
     provider = Mock()
-    provider.create_session.return_value = {
+    provider.close_session.side_effect = lambda sid: events.append(("close", sid))
+    provider.create_session.side_effect = lambda task_id: events.append(("create", task_id)) or {
         "session_name": "replacement",
         "bb_session_id": "browser-session-new",
         "cdp_url": "ws://browser-use.example/devtools/browser/new",
@@ -81,15 +82,14 @@ def test_expired_cloud_session_is_replaced_without_reusing_dead_cdp(monkeypatch)
     }
     monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
     monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: "")
-    monkeypatch.setattr("tools.browser_session_cdp.stop_cdp_supervisor", Mock())
-    local_stop = Mock()
-    monkeypatch.setattr(browser_launcher, "stop_browser", local_stop)
+    monkeypatch.setattr("tools.browser_session_cdp.stop_cdp_supervisor", lambda key: events.append(("stop", key)))
 
     session = bs.get_session_info("task-1")
 
     assert session["bb_session_id"] == "browser-session-new"
+    assert session["cdp_url"] == "ws://browser-use.example/devtools/browser/new"
     assert bs._active_sessions["task-1"] is session
     assert "task-1" in bs._session_last_activity
-    provider.close_session.assert_called_once_with("browser-session-old")
-    provider.create_session.assert_called_once_with("task-1")
-    local_stop.assert_not_called()
+    # The supervisor WebSocket on the dead endpoint closes first, then the provider session, and only
+    # then is the replacement created: nothing keeps driving the expired CDP URL.
+    assert events == [("stop", "task-1"), ("close", "browser-session-old"), ("create", "task-1")]

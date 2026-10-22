@@ -102,8 +102,33 @@ def test_execution_acquires_missing_browser_through_pm(browser_store, monkeypatc
     assert requests == [("ensure", {"name": "chromium", "explicit": False})]
 
 
+def test_doctor_fix_publishes_and_reads_the_pm_browser(browser_store, monkeypatch, capsys):
+    """Plain ``hermes doctor`` never acquires Chromium; ``--fix`` acquires it explicitly through PM and reports
+    the published binary. Only the worker/download boundary is replaced: selection, admission, facts and
+    environment composition are the actual PM implementation."""
+    from hermes_cli import doctor_tools
+    import pm.client
+
+    _, _, publish = browser_store
+    requests, published = [], []
+
+    def request(operation, payload, **kwargs):
+        requests.append((operation, payload))
+        published.append(publish("chromium"))
+
+    monkeypatch.setattr(pm.client, "_request", request)
+    doctor_tools._check_chromium(False)
+    assert requests == []
+    assert "Chromium not installed" in capsys.readouterr().out
+    doctor_tools._check_chromium(True)
+    assert requests == [("ensure", {"name": "chromium", "explicit": True})]
+    assert str(published[0]) in capsys.readouterr().out
+
+
 def test_termux_ownership_policy_never_provisions(browser_store, monkeypatch):
     # Exercise the real environment policy, not an emulated Android binary.
+    from hermes_cli import doctor_tools
+
     monkeypatch.setenv("TERMUX_VERSION", "test")
     monkeypatch.setenv("PATH", "")
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "0")
@@ -115,6 +140,7 @@ def test_termux_ownership_policy_never_provisions(browser_store, monkeypatch):
     monkeypatch.setattr(pm, "ensure", forbidden)
     assert launcher._maybe_autoinstall_chromium() is False
     assert launcher.chromium_ready()[0] is False
+    doctor_tools._check_chromium(True)  # not even `hermes doctor --fix`
 
 
 def test_cdp_override_does_not_require_pm_browser(browser_store, monkeypatch):

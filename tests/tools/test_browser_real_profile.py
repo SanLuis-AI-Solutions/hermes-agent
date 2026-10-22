@@ -8,6 +8,7 @@ are limited to OS detection and process launch.
 """
 import json
 import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -179,6 +180,11 @@ class TestSnapshotRealProfile:
         assert stat.S_IMODE(os.stat(cookies).st_mode) == 0o600
 
 
+# A stand-in browser process for the argv scan. The base interpreter, not a venv's: a Windows venv launcher
+# re-spawns it with the same argv, which would put two processes on the dir.
+_SLEEPER = [getattr(sys, "_base_executable", sys.executable), "-c", "import time; time.sleep(60)"]
+
+
 class TestRealProfileCdpLaunch:
     """The launcher-based real-profile browser in browser_session_real_profile.real_profile_cdp."""
 
@@ -315,6 +321,49 @@ class TestRealProfileCdpLaunch:
         else:
             snapshot.assert_called_once()
             assert cdp is None and "boom" in err
+
+    @pytest.mark.platforms("windows")
+    def test_windows_reattach_finds_the_surviving_chrome_by_its_argv(self, tmp_path):
+        """Windows Chrome leaves no ``SingletonLock`` symlink: the surviving browser is the process whose argv
+        names the copy dir, and finding it is what keeps the snapshot off its open databases."""
+        import subprocess
+
+        (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n", encoding="utf-8")
+        chrome = subprocess.Popen([*_SLEEPER, f"--user-data-dir={tmp_path}"])
+        version = Mock()
+        version.json.return_value = {"webSocketDebuggerUrl": "ws://127.0.0.1:41000/devtools/browser/x"}
+        try:
+            with patch.object(bs_cloud, "use_real_profile", return_value=True), \
+                 patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+                 patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+                 patch("hermes_cli.browser_connect.chromium_executable", return_value="chrome.exe"), \
+                 patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")) as snapshot, \
+                 patch("requests.get", return_value=version):
+                cdp, err = rp.real_profile_cdp()
+        finally:
+            chrome.kill()
+            chrome.wait(timeout=30)
+        assert (cdp, err) == ("ws://127.0.0.1:41000/devtools/browser/x", None)
+        snapshot.assert_not_called()
+        attached = launcher.get_browser(rp.REAL_PROFILE_KEY)
+        assert attached is not None and attached.owned is False and attached.pid == chrome.pid
+
+    def test_the_browser_holding_a_dir_is_found_by_its_argv_never_a_helper(self, tmp_path):
+        """The argv scan behind the Windows singleton check (real processes, any host): the browser process
+        naming the dir, never a ``--type=`` helper naming it too, and nothing for another dir."""
+        import subprocess
+
+        helper = subprocess.Popen([*_SLEEPER, "--type=renderer", f"--user-data-dir={tmp_path}"])
+        browser = subprocess.Popen([*_SLEEPER, f"--user-data-dir={tmp_path}"])
+        try:
+            found = launcher._pid_naming_dir(str(tmp_path))
+            other = launcher._pid_naming_dir(str(tmp_path / "other"))
+        finally:
+            for proc in (helper, browser):
+                proc.kill()
+                proc.wait(timeout=30)
+        assert found == browser.pid
+        assert other is None
 
 
 class TestConsentConfigRead:
