@@ -236,13 +236,14 @@ def _create_local_session(cache_key: str, allow_real_profile: bool = True) -> di
     reach an arbitrary internal host the model chose."""
     fallback_note = None
     if allow_real_profile:
-        from tools.browser_session_real_profile import real_profile_cdp, real_profile_fallback_note
+        from tools.browser_session_real_profile import real_profile_cdp, real_profile_fallback_note, real_profile_key
         cdp_url, err = real_profile_cdp()
         if err:
             logger.warning("real-profile unavailable for %s, using a fresh browser: %s", cache_key, err)
             fallback_note = real_profile_fallback_note(err)
         elif cdp_url:
             info = _session_record("rp", cdp_url, {"local": True, "real_profile": True})
+            info.update(launcher_key=real_profile_key(), shared_profile=True)
             logger.info("Created real-profile local session %s for %s", info["session_name"], cache_key)
             return info
     from tools.browser_lightpanda import using_lightpanda_engine
@@ -306,8 +307,7 @@ def _backend_dead(session_info: dict[str, Any]) -> bool:
     if features.get("sandbox"):
         from tools.browser_session_sandbox import sandbox_browser_alive
         return not sandbox_browser_alive(session_info)
-    launcher_key = session_info.get("launcher_key") or (
-        "hermes-real-profile" if features.get("real_profile") else None)
+    launcher_key = session_info.get("launcher_key")
     if launcher_key:
         from tools.browser_launcher import get_browser
         browser = get_browser(launcher_key)

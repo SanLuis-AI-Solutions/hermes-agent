@@ -60,10 +60,8 @@ class TestReapOrphanedBrowserSessions:
         """#100855: the shared real-profile browser is not ``<prefix>_<hex>`` named, so it must still be
         found. Same owner-liveness rule as every other lane: dead owner => reaped. Its persistent
         profile copy is never deleted by the reap."""
-        from tools.browser_session_real_profile import REAL_PROFILE_KEY
-
-        copy_dir = tmp_path / REAL_PROFILE_KEY
-        copy_dir.mkdir()
+        copy_dir = tmp_path / "browser-profile" / "chrome"
+        copy_dir.mkdir(parents=True)
         rec = _record(records, pid=4242, udd=str(copy_dir), ephemeral=False)
         monkeypatch.setattr(launcher, "_pid_alive", _alive(4242))  # browser alive, owning hermes gone
         monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)

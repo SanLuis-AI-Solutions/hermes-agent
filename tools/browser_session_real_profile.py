@@ -3,8 +3,8 @@ launch the user's REAL browser binary on it through the launcher.
 
 The real binary (not the packaged Chromium, and never ``--password-store=basic``/``--use-mock-keychain``)
 keeps the OS keychain path intact, so macOS cookies decrypt and the copy stays signed in. One shared
-browser serves every session (concurrent tasks must not launch rival Chromiums on one copy dir); it is
-terminated at exit or when consent is turned off.
+browser per profile home serves every session of that profile (concurrent tasks must not launch rival
+Chromiums on one copy dir); it is terminated at exit or when THAT profile turns consent off.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-REAL_PROFILE_KEY = "hermes-real-profile"
 _RP = "browser.use_real_profile is on, but "
 # Keep lock contention well inside the agent's 420-second outer tool deadline (an abandoned holder
 # may be a daemon worker Python cannot terminate).
@@ -57,10 +56,17 @@ def _snapshot_error(err: str) -> str:
     return f"{_RP}{err}"
 
 
+def real_profile_key() -> str:
+    """Launcher key of the CURRENT profile's real-profile browser. Per home: one process serves many profiles,
+    so a consent-off profile must never stop another's browser, nor a consenting one reuse its cookie jar."""
+    from hermes_constants import hermes_home_key
+    return f"hermes-real-profile@{hermes_home_key()}"
+
+
 def terminate_real_profile_browser() -> None:
-    """Stop the shared real-profile browser if this process launched it (idempotent, atexit-safe)."""
+    """Stop this profile's real-profile browser if this process launched it (idempotent)."""
     from tools.browser_launcher import stop_browser
-    stop_browser(REAL_PROFILE_KEY)
+    stop_browser(real_profile_key())
 
 
 def _consent_revoked() -> tuple[None, None]:
@@ -90,7 +96,7 @@ def _launch(browser_name: str) -> tuple[Optional[str], Optional[str]]:
     if real_binary is None:
         return None, f"{_RP}the real browser binary for '{browser_name}' could not be found. Reinstall it or turn the toggle off."
     ensure_screen_for_headed_chromium()
-    launched, err = launch_chromium(REAL_PROFILE_KEY, executable=real_binary, user_data_dir=copy_dir,
+    launched, err = launch_chromium(real_profile_key(), executable=real_binary, user_data_dir=copy_dir,
                                     ephemeral=False, extra_args=_REAL_PROFILE_EXTRA_FLAGS, timeout=30.0,
                                     sandbox_bypass=False)
     if launched is None:
@@ -119,7 +125,7 @@ def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
                       "finished. Retry after that call completes, or restart Hermes if it was abandoned.")
     try:
         from tools.browser_launcher import get_browser
-        running = get_browser(REAL_PROFILE_KEY)
+        running = get_browser(real_profile_key())
         if running is not None:
             return running.cdp_url, None
         from hermes_cli.browser_connect import detect_default_chromium

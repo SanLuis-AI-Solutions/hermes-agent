@@ -441,3 +441,78 @@ def test_a_connect_that_lands_while_browser_exec_spawns_its_daemon_reloads_it(pr
         assert connects[0]["result"]["connected"]
         nxt = json.loads(bu_cli.browser_exec("print(1)", task_id="t1"))
     assert nxt["output"] == "http://127.0.0.1:9712"
+
+
+# --- real-profile browser per profile home (one process, many profiles) -----------------------------
+
+@pytest.fixture
+def real_profile_launches(tmp_path, monkeypatch):
+    """Session + launcher registries isolated; the real-profile and fresh launches register a fake browser
+    under whatever key the session layer asks for (what the launcher does), and every stop is recorded."""
+    import os
+    from tools import browser_launcher as launcher, browser_lightpanda, browser_session as bs
+    from tools import browser_session_lifecycle as lifecycle
+    from tools.bot_desktop import placement, runtime
+    import hermes_cli.browser_connect as bc
+    for name in ("_active_sessions", "_session_last_activity", "_session_owner_homes", "_cleanup_failures"):
+        monkeypatch.setattr(bs, name, {})
+    monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(launcher, "_browsers", {})
+    monkeypatch.setattr(runtime, "tool_placement", lambda: placement.GATEWAY)
+    monkeypatch.setattr(bs, "ensure_screen_for_headed_chromium", lambda: None)
+    monkeypatch.setattr(browser_lightpanda, "using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr(bc, "detect_default_chromium", lambda system=None: "chrome")
+    monkeypatch.setattr(bc, "chromium_executable", lambda name, system=None: "/usr/bin/chrome")
+    monkeypatch.setattr(bc, "snapshot_real_profile", lambda name: (str(get_hermes_home() / "rp-copy"), None))
+    stopped = []
+    monkeypatch.setattr(launcher, "_terminate", lambda pid, start_time, proc: stopped.append(pid))
+
+    def launch(key, **kw):
+        port = 9500 + len(launcher._browsers)
+        browser = launcher.LaunchedBrowser(
+            key=key, pid=os.getpid(), start_time=None, cdp_url=f"ws://127.0.0.1:{port}/devtools/browser/{port}",
+            http_url=f"http://127.0.0.1:{port}", user_data_dir=kw.get("user_data_dir") or str(tmp_path / key),
+            owned=True, ephemeral=False, home_key=hermes_home_key())
+        launcher._browsers[key] = browser
+        return browser, None
+    monkeypatch.setattr(launcher, "launch_chromium", launch)
+    return stopped
+
+
+def _consent(home, on: bool) -> None:
+    (home / "config.yaml").write_text(f"browser:\n  cloud_provider: local\n  use_real_profile: {'true' if on else 'false'}\n",
+                                      encoding="utf-8")
+
+
+def test_a_consent_off_profile_never_stops_another_profiles_real_profile_browser(profiles, real_profile_launches):
+    """Profile B (consent off, the default) creating a local session revokes only ITS real-profile browser;
+    profile A's keeps serving A's session."""
+    from tools import browser_session as bs
+    a, b = profiles
+    _consent(a, True)
+    _consent(b, False)
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        info_a = bs.get_session_info("task@a")
+        assert info_a["features"].get("real_profile")
+    with _profile_runtime_scope(b, hydrate_secrets=False):
+        info_b = bs.get_session_info("task@b")
+        assert not info_b["features"].get("real_profile")
+
+    assert real_profile_launches == [], "B's consent-off must not terminate A's real-profile browser"
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        assert bs._backend_dead(info_a) is False
+        assert bs.get_session_info("task@a")["cdp_url"] == info_a["cdp_url"]
+
+
+def test_a_consenting_profile_never_reuses_another_profiles_real_profile_browser(profiles, real_profile_launches):
+    """Two consenting profiles each get their own real-profile browser (their own snapshot, their own cookies)."""
+    from tools.browser_session_real_profile import real_profile_cdp
+    a, b = profiles
+    _consent(a, True)
+    _consent(b, True)
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        cdp_a, err_a = real_profile_cdp()
+    with _profile_runtime_scope(b, hydrate_secrets=False):
+        cdp_b, err_b = real_profile_cdp()
+    assert err_a is None and err_b is None
+    assert cdp_a != cdp_b

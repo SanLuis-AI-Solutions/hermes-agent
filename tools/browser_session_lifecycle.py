@@ -5,7 +5,7 @@ Teardown per session kind (CDP supervisor stopped first, so our WebSocket closes
 cloud → ``provider.close_session``; Lightpanda → ``stop_lightpanda``; launcher Chromium → ``stop_browser``
 (a shared persistent profile only once no other session uses it); sandbox → SIGTERM inside the sandbox
 once no other session uses it;
-real profile → shared, terminated at exit / consent-off; CDP override → nothing (the user's browser).
+real profile → shared per profile home, terminated at exit / on that profile's consent-off; CDP override → nothing (the user's browser).
 """
 
 from __future__ import annotations
@@ -139,7 +139,7 @@ def release_session_backend(cache_key: str, session_info: dict[str, Any]) -> Non
     if features.get("sandbox"):
         from tools.browser_session_sandbox import stop_sandbox_browser
         stop_sandbox_browser(session_info)
-    else:
+    elif not features.get("real_profile"):  # outlives its sessions: stopped at exit / on consent-off
         from tools.browser_launcher import stop_browser
         stop_browser(launcher_key)
 

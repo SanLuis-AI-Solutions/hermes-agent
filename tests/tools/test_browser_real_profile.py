@@ -285,7 +285,7 @@ class TestRealProfileCdpLaunch:
         assert "--password-store=basic" not in argv and "--use-mock-keychain" not in argv
         assert not set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) & set(argv)
         assert (copy_dir / "Default" / "Cookies").read_text(encoding="utf-8") == "copied-cookies"
-        running = launcher.get_browser(rp.REAL_PROFILE_KEY)
+        running = launcher.get_browser(rp.real_profile_key())
         assert running is not None and running.owned and not running.ephemeral
 
     @pytest.mark.platforms("posix")
@@ -309,7 +309,7 @@ class TestRealProfileCdpLaunch:
         if live_browser_id == "/devtools/browser/x":
             assert (cdp, err) == ("ws://127.0.0.1:41000/devtools/browser/x", None)
             snapshot.assert_not_called()
-            attached = launcher.get_browser(rp.REAL_PROFILE_KEY)
+            attached = launcher.get_browser(rp.real_profile_key())
             assert attached is not None and attached.owned is False
         else:
             snapshot.assert_called_once()
@@ -899,8 +899,8 @@ class TestReviewRound3:
         """When the live real-profile browser on our copy dir is reused, snapshot_real_profile
         must NOT be called — otherwise it rewrites cookie DBs under a live
         browser."""
-        launcher._browsers[rp.REAL_PROFILE_KEY] = launcher.LaunchedBrowser(
-            key=rp.REAL_PROFILE_KEY, pid=os.getpid(), start_time=None,
+        launcher._browsers[rp.real_profile_key()] = launcher.LaunchedBrowser(
+            key=rp.real_profile_key(), pid=os.getpid(), start_time=None,
             cdp_url="ws://127.0.0.1:9251/devtools/browser/rp", http_url="http://127.0.0.1:9251",
             user_data_dir=str(tmp_path), owned=False, ephemeral=False, home_key="h")
         with patch.object(bs_cloud, "use_real_profile", return_value=True), \
