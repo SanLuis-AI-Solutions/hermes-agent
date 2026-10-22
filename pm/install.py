@@ -363,6 +363,17 @@ def _entry_current(package, lockfile, facts, store, entry, previous, version, pi
     return recorded == pin and not package.verify(entry, target)
 
 
+def _refresh_recorded_env(package, facts, store, entry, previous, target) -> None:
+    """An entry's env is derived from the package code, not its bytes: when the code changes it (a
+    variable renamed or retired), re-record it so stores installed earlier match what admission
+    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched."""
+    env = package.env(entry, target)
+    if facts.env_for(package.name, store.root) != env:
+        facts.record(package.name, previous["version"], previous["entry"], env, store.root,
+                     target=previous.get("target"), artifacts=previous.get("artifacts"),
+                     digest=previous.get("digest"))
+
+
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
     source_facts, source_store = copy_from
     source = source_facts.get(package.name)
@@ -429,6 +440,8 @@ def _install(
         _reclaim_set_aside(store)
         if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
+            if facts is not None:
+                _refresh_recorded_env(package, facts, store, entry, previous, target)
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:
