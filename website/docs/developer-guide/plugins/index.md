@@ -1433,17 +1433,16 @@ ctx.register_tool(
 
 ### Overriding a built-in tool
 
-To replace a built-in tool with your own implementation (e.g. swap the
-default browser tool for a headed-Chrome CDP backend, or replace
+To replace a built-in tool with your own implementation (e.g. replace
 `web_search` with a custom corporate index), pass `override=True`:
 
 ```python
 def register(ctx):
     ctx.register_tool(
-        name="browser_navigate",             # same name as the built-in
-        toolset="plugin_my_browser",         # your own toolset namespace
+        name="web_search",                   # same name as the built-in
+        toolset="plugin_my_search",          # your own toolset namespace
         schema={...},
-        handler=my_custom_navigate,
+        handler=my_corporate_search,
         override=True,                       # explicit opt-in
     )
 ```

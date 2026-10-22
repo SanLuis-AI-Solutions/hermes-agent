@@ -408,7 +408,9 @@ browser_tabs
 browser_type
 ```
 
-Requested capabilities outside that list are filtered out. Raw CDP, arbitrary
+These are controller-protocol action names, not the agent's tool names (the
+agent's browser tools are `browser_exec`, `browser_cdp`, `browser_dialog` and
+`browser_vault`). Requested capabilities outside that list are filtered out. Raw CDP, arbitrary
 script evaluation, console access, uploads, image extraction, and vision are not
 part of the controller protocol.
 
