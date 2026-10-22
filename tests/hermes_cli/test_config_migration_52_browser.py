@@ -53,6 +53,16 @@ def test_backend_off_is_dropped_with_a_notice(tmp_path, monkeypatch, capsys):
     assert "browser_exec" not in capsys.readouterr().out
 
 
+def test_quiet_migration_hands_the_notice_to_the_caller(tmp_path, monkeypatch, capsys):
+    """`hermes update` migrates quietly and re-prints only ``config_added``; the notice must be in it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    home = _home(tmp_path / "a", {"_config_version": 51, "browser": {"backend": "off"}})
+    results = _migrate(home, quiet=True)
+    assert capsys.readouterr().out == ""
+    assert any("browser_exec is the browser now" in note and "`browser` toolset" in note
+               for note in results["config_added"])
+
+
 @pytest.mark.parametrize("value", ["", "browser-use", "Browser-Use", None])
 def test_other_backend_values_are_dropped_silently(tmp_path, monkeypatch, capsys, value):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))

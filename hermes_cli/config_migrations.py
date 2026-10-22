@@ -773,11 +773,14 @@ def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     added, messages = [], []
     if "backend" in browser:
         backend = browser.pop("backend")
-        added.append("removed browser.backend")
         if isinstance(backend, str) and backend.strip().lower() == "off":
-            messages.append(
-                "  ✓ Removed browser.backend: off — the built-in browser tools are gone and browser_exec is the "
-                "browser now. To turn browsing off, disable the `browser` toolset in `hermes tools`.")
+            # config_added is what `hermes update` re-surfaces on its quiet path, so the notice rides in it.
+            note = ("removed browser.backend: off — the built-in browser tools are gone and browser_exec is the "
+                    "browser now; to turn browsing off, disable the `browser` toolset in `hermes tools`")
+            added.append(note)
+            messages.append(f"  ✓ {note[0].upper()}{note[1:]}.")
+        else:
+            added.append("removed browser.backend")
     moved = []
     for name, value in _agent_browser_env(Path(get_hermes_home())).items():
         key = dict(_AGENT_BROWSER_ENV_KEYS)[name]
