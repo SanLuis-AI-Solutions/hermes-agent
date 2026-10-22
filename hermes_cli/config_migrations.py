@@ -702,6 +702,104 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
+# AGENT_BROWSER_* (read by agent-browser, which left Hermes) -> the browser.* key Hermes reads now.
+_AGENT_BROWSER_ENV_KEYS = (
+    ("AGENT_BROWSER_EXECUTABLE_PATH", "executable_path"),
+    ("AGENT_BROWSER_PROFILE", "user_data_dir"),
+    ("AGENT_BROWSER_ARGS", "chromium_args"),
+    ("AGENT_BROWSER_HEADED", "headed"),
+    ("AGENT_BROWSER_ENGINE", "engine"),
+)
+
+
+def _agent_browser_env(home) -> dict[str, str]:
+    """AGENT_BROWSER_* as *home* set them: its dotenv layers, then the process env for the launch home
+    only (a served profile's env is the launch profile's, not its own)."""
+    import os
+
+    from hermes_cli.env_loader import resolve_home_dotenv
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+
+    dotenv = resolve_home_dotenv(home)
+    launch = hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
+    found = {}
+    for name, _key in _AGENT_BROWSER_ENV_KEYS:
+        value = (dotenv.get(name) or (os.environ.get(name) if launch else None) or "").strip()
+        if value:
+            found[name] = value
+    return found
+
+
+def _inside_pm_store(value: str) -> bool:
+    """pm (and the Docker image, from pm) exported its own Chromium as AGENT_BROWSER_EXECUTABLE_PATH:
+    that is the default now, and a copied versioned store path would break at the next Chromium bump."""
+    from pathlib import Path
+
+    from pm import paths
+
+    try:
+        resolved = Path(value).expanduser().resolve()
+        roots = {paths.store_root().resolve(), paths.writable_store_root().resolve()}
+    except (OSError, RuntimeError):
+        return False
+    return any(resolved.is_relative_to(root) for root in roots)
+
+
+def _browser_value_from_env(key: str, value: str) -> Any:
+    """The ``browser.<key>`` value an AGENT_BROWSER_* value meant, or None when it carries nothing."""
+    if key == "chromium_args":
+        return [arg.strip() for arg in re.split(r"[,\n]", value) if arg.strip()] or None
+    if key == "headed":
+        return True if value.lower() in ("1", "true", "yes", "on") else None
+    if key == "engine":
+        return value.lower() if value.lower() in ("auto", "lightpanda", "chrome") else None
+    if key == "executable_path" and _inside_pm_store(value):
+        return None
+    return value
+
+
+def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
+    # 51 -> 52: agent-browser and the built-in browser_* tools left Hermes; browser_exec is the only
+    # browser. `browser.backend` chose between the two, so it is dropped (an `off`, the opt-out of
+    # browser_exec, gets a notice saying how to turn browsing off now). The AGENT_BROWSER_* settings
+    # this home's .env gave agent-browser move to the browser.* keys the launcher reads, never over
+    # a value already set. .env itself is left alone.
+    from pathlib import Path
+
+    from hermes_constants import get_hermes_home
+
+    config = read_raw_config()
+    browser = config.get("browser") if isinstance(config.get("browser"), dict) else {}
+    added, messages = [], []
+    if "backend" in browser:
+        backend = browser.pop("backend")
+        added.append("removed browser.backend")
+        if isinstance(backend, str) and backend.strip().lower() == "off":
+            messages.append(
+                "  ✓ Removed browser.backend: off — the built-in browser tools are gone and browser_exec is the "
+                "browser now. To turn browsing off, disable the `browser` toolset in `hermes tools`.")
+    moved = []
+    for name, value in _agent_browser_env(Path(get_hermes_home())).items():
+        key = dict(_AGENT_BROWSER_ENV_KEYS)[name]
+        if browser.get(key) not in (None, "", []):
+            continue
+        new = _browser_value_from_env(key, value)
+        if new is not None:
+            browser[key] = new
+            moved.append(f"{name} → browser.{key}")
+    if moved:
+        added.append(f"browser: {', '.join(moved)}")
+        messages.append(f"  ✓ Moved agent-browser settings from .env to config.yaml: {', '.join(moved)}")
+    if not added:
+        return
+    config["browser"] = browser
+    _persist_migration(config)
+    results["config_added"].extend(added)
+    if not quiet:
+        for message in messages:
+            print(message)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -847,6 +945,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
             "admitted to the target profile's running gateway and tracked by receipt, so cron no "
             "longer runs (or times out) a Bot Chat turn of its own."),
         extra_guard=lambda raw: "bot_chat_delivery_timeout_seconds" in raw)),
+    # 51 -> 52: browser.backend dropped, AGENT_BROWSER_* .env settings -> browser.* (see _migrate_to_52).
+    (52, _migrate_to_52),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -858,7 +958,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52})
 
 #: Legacy-key steps that run on every migration pass whatever the stamp says, because a stamp at
 #: or past their version does not prove they ran: unreleased builds of the gateway-runtime branch
