@@ -250,19 +250,6 @@ def _print_lightpanda_engine_status() -> None:
           else f"   {_t('browser.binary_not_found', hint=LIGHTPANDA_INSTALL_HINT)}")
 
 
-def _browser_use(cli, arg: str) -> None:
-    """/browser use [off] — toggle Browser Use mode (browser.backend); resets the session."""
-    from tools.browser_use_cli import set_browser_use_mode
-    if arg not in {"on", "off"}:
-        return _say_block(
-            _t("browser.use_usage"),
-            f"   {_t('browser.use_on_hint')}", f"   {_t('browser.use_off_hint')}")
-    set_browser_use_mode(arg == "on")
-    headline = _t("browser.use_enabled" if arg == "on" else "browser.use_disabled")
-    cli.new_session()
-    _say_block(headline, f"   {_t('browser.session_reset')}")
-
-
 def _launch_default_cdp_browser(port: int):
     """Launch a local debug browser for the default CDP URL; returns the discovered CDP url or
     None (after printing what went wrong / how to launch manually)."""
@@ -329,7 +316,7 @@ def _browser_connect(cli, cdp_url: str) -> None:
         cli._pending_input.put(
             "[System note: The user invoked /browser connect and connected your browser tools to "
             "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
-            "Your browser_navigate, browser_snapshot, browser_click, and other browser tools now "
+            "Your browser tools (browser_exec, browser_cdp) now "
             "control that CDP browser. The command itself is a signal that using browser tools for "
             "their current browser-related request is expected; do not wait for separate permission "
             "just because CDP is connected. This is typically a Hermes-managed isolated debug "
@@ -357,8 +344,7 @@ def _browser_disconnect(cli) -> None:
 # /browser status headline per local browser.engine value: (headline key, *detail keys) under
 # ``cli.commands.browser.*``; detail lines are indented at print time.
 _LOCAL_ENGINE_LINES = {
-    "lightpanda": ("status_lightpanda", "status_lightpanda_note", "status_lightpanda_fallback"),
-    "chrome": ("status_chrome",),
+    "lightpanda": ("status_lightpanda", "status_lightpanda_note"),
     "auto": ("status_auto",)}
 
 
@@ -370,10 +356,6 @@ def _local_engine_lines(engine: str) -> list:
 def _browser_status() -> None:
     current = os.environ.get("BROWSER_CDP_URL", "").strip()
     print()
-    if _probe("tools.browser_use_cli", "is_browser_use_cli_mode", False):
-        _pr(_t("browser.status_browser_use"), f"   {_t('browser.status_browser_use_note')}")
-        _print_lightpanda_engine_status()
-        return _say_block(f"   {_t('browser.status_use_off_hint')}")
     if current:
         _pr(_t("browser.status_connected"), f"   {_t('browser.endpoint', url=current)}")
         _print_lightpanda_engine_status()
@@ -402,7 +384,6 @@ def _browser_status() -> None:
 # /browser subcommand word → handler(cli, rest); ``rest`` is the raw (case-preserved)
 # remainder of the line. Adding a subcommand is one row here plus a usage line.
 _BROWSER_SUBCOMMANDS = {
-    "use": lambda cli, rest: _browser_use(cli, rest.lower() or "on"),
     "connect": lambda cli, rest: _browser_connect(cli, rest or DEFAULT_BROWSER_CDP_URL),
     "disconnect": lambda cli, rest: _browser_disconnect(cli),
     "status": lambda cli, rest: _browser_status(),
@@ -1597,7 +1578,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _cp("\n" + _dim_line(_t("bundles.invoke_hint")))
 
     def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status|use — manage the live Chromium-family CDP connection."""
+        """Handle /browser connect|disconnect|status — manage the live Chromium-family CDP connection."""
         # The subcommand word is matched case-insensitively; the raw argument keeps
         # its case because a CDP URL's path segment is case-sensitive.
         parts = _command_arg(cmd).split(None, 1)
@@ -1607,7 +1588,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if handler is None:
             _say_block(
                 _t("browser.usage"), "",
-                *(f"   {_t(f'browser.usage_{sub}')}" for sub in ("connect", "disconnect", "status", "use")))
+                *(f"   {_t(f'browser.usage_{sub}')}" for sub in ("connect", "disconnect", "status")))
             return
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
