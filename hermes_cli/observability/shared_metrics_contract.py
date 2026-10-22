@@ -285,9 +285,9 @@ DELEGATION_OUTCOMES = frozenset({"cancelled", "failed", "partial", "success"})
 DELEGATION_DEPTHS = frozenset({"1", "2", "3", "gte_4"})
 DELEGATION_MODES = frozenset({"background", "foreground"})
 EXECUTION_KINDS = frozenset({"browser", "code", "terminal"})
-# Browser backend labels: tools/browser_{lightpanda,session_cdp,session_cloud,extension_router}.py plus
-# the bundled cloud providers in plugins/browser/. ``camofox`` stays a legacy value (now the catalog
-# plugin; removing a shipped schema value breaks older relays).
+# Browser backend labels: tools/browser_{lightpanda,session_cdp,session_cloud}.py plus the bundled cloud
+# providers in plugins/browser/. ``camofox`` (now the catalog plugin) and ``extension`` (the removed
+# browser-extension control) stay as legacy values: removing a shipped schema value breaks older relays.
 BROWSER_BACKENDS = frozenset({
     "browser-use", "browserbase", "camofox", "cdp", "extension", "firecrawl", "lightpanda", "local", "other",
 })
