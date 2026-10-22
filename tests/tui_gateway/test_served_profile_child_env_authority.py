@@ -62,8 +62,8 @@ def test_ambient_only_launch_credential_never_reaches_a_routed_child(homes):
 
 def test_routed_home_with_multiplex_flag_off_gets_no_launch_residue(homes, monkeypatch):
     """Desktop/dashboard topology: B served via the HERMES_HOME override only. The slash-worker /
-    helper child sees B's env, and the browser passthrough resolves B's (absent) key as no key."""
-    from tools.browser_tool import _build_browser_env
+    helper child sees B's env, and the browser child env carries no provider key for either profile."""
+    from tools.browser_session import build_browser_env
 
     _a, b = homes
     token = set_hermes_home_override(str(b))
@@ -71,12 +71,12 @@ def test_routed_home_with_multiplex_flag_off_gets_no_launch_residue(homes, monke
         env = served_profile_child_env(inherit_credentials=True)
         assert env["HERMES_HOME"] == str(b) and env["B_MARKER"] == "b"
         assert "A_MARKER" not in env and "HERMES_MODEL" not in env and "OPENAI_API_KEY" not in env
-        browser_env = _build_browser_env()
+        browser_env = build_browser_env()
         assert "FIRECRAWL_API_KEY" not in browser_env and browser_env["HERMES_HOME"] == str(b)
     finally:
         reset_hermes_home_override(token)
-    # Control: the launch profile's own browser keeps its key and its settings.
-    assert _build_browser_env()["FIRECRAWL_API_KEY"] == "a-fc"
+    # Control: the launch profile's browser env is credential-free too; its other children keep their settings.
+    assert "FIRECRAWL_API_KEY" not in build_browser_env()
     assert served_profile_child_env(inherit_credentials=True)["HERMES_MODEL"] == "a-model"
 
 

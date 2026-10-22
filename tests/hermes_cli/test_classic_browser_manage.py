@@ -105,9 +105,9 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    import tools.browser_tool_lifecycle as lifecycle
-    from tools import browser_tool_cdp
-    monkeypatch.setattr(browser_tool_cdp, "_live_overrides", {})
+    import tools.browser_session_lifecycle as lifecycle
+    from tools import browser_session_cdp
+    monkeypatch.setattr(browser_session_cdp, "_live_overrides", {})
     reaps = []
     monkeypatch.setattr(lifecycle, "cleanup_profile_browsers", reaps.append)
     monkeypatch.setattr(lifecycle, "cleanup_all_browsers", lambda: reaps.append("ALL"))
@@ -145,9 +145,9 @@ def _registry(launch, *homes):
 
 def _resolved(home):
     from gateway.run import _profile_runtime_scope
-    from tools.browser_tool_cdp import _get_cdp_override_raw
+    from tools.browser_session_cdp import get_cdp_override_raw
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        return _get_cdp_override_raw()
+        return get_cdp_override_raw()
 
 
 def test_a_browser_one_profile_connects_never_reaches_another_profiles_session(homes, monkeypatch):

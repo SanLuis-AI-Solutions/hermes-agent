@@ -1,7 +1,7 @@
 """``browser.manage`` RPCs: connect/disconnect/status (split from ``test_tui_gateway_server.py``).
 
 Since CLI-9 (#134889) the live ``/browser connect`` endpoint is the requesting profile's (a per-home
-map in ``tools.browser_tool_cdp``), and only that profile's browsers are reaped.
+map in ``tools.browser_session_cdp``), and only that profile's browsers are reaped.
 """
 import json
 import os
@@ -102,13 +102,13 @@ def test_browser_manage_has_no_use_action_and_status_reports_no_mode():
 @pytest.fixture(autouse=True)
 def _no_live_cdp(monkeypatch):
     """Each test starts with no profile's live ``/browser connect`` endpoint."""
-    from tools import browser_tool_cdp
-    monkeypatch.setattr(browser_tool_cdp, "_live_overrides", {})
+    from tools import browser_session_cdp
+    monkeypatch.setattr(browser_session_cdp, "_live_overrides", {})
 
 
 def _live_cdp() -> str:
     """The launch profile's live ``/browser connect`` endpoint (per profile since CLI-9)."""
-    from tools.browser_tool_cdp import live_cdp_override
+    from tools.browser_session_cdp import live_cdp_override
     return live_cdp_override()
 
 
@@ -127,7 +127,7 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
         cleanup_profile_browsers=_cleanup_all,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=True)
         resp = server.handle_request(
             {
@@ -150,7 +150,7 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
         cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         urls = _stub_urlopen_capture(monkeypatch, ok=True)
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -177,7 +177,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
@@ -226,7 +226,7 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
         cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
@@ -261,7 +261,7 @@ def test_browser_manage_connect_handles_null_url(monkeypatch):
         cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=True)
         resp = server.handle_request(
             {
@@ -322,7 +322,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
 
     monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
     launched = ChromeDebugLaunch(launched=True)
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         with (
             patch(
                 "hermes_cli.browser_connect.launch_chrome_debug",
@@ -366,7 +366,7 @@ def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
     import urllib.request
 
     monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
         )
@@ -410,7 +410,7 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
         launch_ports.append(port)
         return ChromeDebugLaunch(launched=True)
 
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         with (
             patch("hermes_cli.browser_connect.launch_chrome_debug", side_effect=_launch),
             patch("hermes_cli.browser_connect.local_port_in_use", return_value=True),
@@ -428,7 +428,7 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
 
 def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
     """An unreachable endpoint must NOT mutate the env or reap sessions."""
-    from tools.browser_tool_cdp import set_live_cdp_override
+    from tools.browser_session_cdp import set_live_cdp_override
     set_live_cdp_override("http://existing:9222")
     cleanup_calls: list[str] = []
     fake = types.SimpleNamespace(
@@ -437,7 +437,7 @@ def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
         ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=False)
         resp = server.handle_request(
             {
@@ -462,7 +462,7 @@ def test_browser_manage_connect_normalizes_bare_host_port(monkeypatch):
         cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=True)
         resp = server.handle_request(
             {
@@ -488,7 +488,7 @@ def test_browser_manage_connect_strips_discovery_path(monkeypatch):
         cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         _stub_urlopen(monkeypatch, ok=True)
         resp = server.handle_request(
             {
@@ -520,7 +520,7 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
         def __exit__(self, *a):
             return False
 
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         # If urlopen is reached for a concrete ws endpoint, the test
         # would still pass because _stub_urlopen returned ok=True before;
         # patch it to assert-fail so we prove the HTTP probe is skipped.
@@ -559,7 +559,7 @@ def test_browser_manage_connect_local_devtools_ws_preserves_path(monkeypatch):
         def __exit__(self, *a):
             return False
 
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         with patch("socket.create_connection", return_value=_OkSocket()):
             resp = server.handle_request(
                 {
@@ -626,7 +626,7 @@ def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
         seen_targets.append(addr)
         return _OkSocket()
 
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         # urlopen would 404/ECONNREFUSED on a real hosted CDP endpoint;
         # asserting it's never called proves the probe was skipped.
         with patch(
@@ -657,7 +657,7 @@ def test_browser_manage_connect_concrete_ws_tcp_unreachable(monkeypatch):
     )
     concrete = "ws://offline.example/devtools/browser/missing"
 
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         with patch("socket.create_connection", side_effect=OSError("ECONNREFUSED")):
             resp = server.handle_request(
                 {
@@ -672,7 +672,7 @@ def test_browser_manage_connect_concrete_ws_tcp_unreachable(monkeypatch):
 
 
 def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
-    from tools.browser_tool_cdp import set_live_cdp_override
+    from tools.browser_session_cdp import set_live_cdp_override
     monkeypatch.setenv("BROWSER_CDP_URL", "http://operator:9222")  # an operator's env is not the live connect
     set_live_cdp_override("http://127.0.0.1:9222")
     cleanup_count = {"n": 0}
@@ -682,7 +682,7 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
         ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
-    with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
+    with patch.dict(sys.modules, {"tools.browser_session_lifecycle": fake}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "disconnect"}}
         )

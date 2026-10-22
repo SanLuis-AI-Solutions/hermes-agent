@@ -118,15 +118,15 @@ def test_helper_children_resolve_secrets_through_the_served_profile(mux_homes):
     """``key_cmd`` helpers and the browser driver spawned during B's turn see B's key, never A's."""
     from agent.command_token_source import _mint
     from gateway.run import _profile_runtime_scope
-    from tools.browser_tool import _build_browser_env
+    from tools.browser_session import build_browser_env
 
     _a, b = mux_homes
     helper = (f"{sys.executable} -c \"import os;print(os.environ.get('B_MARKER','-')+'|'"
               f"+os.environ.get('A_MARKER','-')+'|'+os.environ.get('HERMES_HOME',''))\"")
     with _profile_runtime_scope(b, hydrate_secrets=False):
         token, _ttl = _mint(helper, "b-provider")
-        browser_env = _build_browser_env()
+        browser_env = build_browser_env()
     assert token == f"b|-|{b}"
     seen = _child_view(browser_env)
     _assert_is_b_env(seen, b, with_secrets=False)  # provider tier stays scrubbed for the browser
-    assert seen["FIRECRAWL_API_KEY"] == "b-fc"  # the passthrough key is B's, not the launch profile's
+    assert seen["FIRECRAWL_API_KEY"] is None  # browser children get no provider keys, never the launch profile's

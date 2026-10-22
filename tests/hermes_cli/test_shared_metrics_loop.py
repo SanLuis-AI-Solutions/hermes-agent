@@ -308,13 +308,15 @@ def test_browser_calls_name_the_backend_that_served_them(home):
     ]
 
 
-def test_browser_tool_backend_is_resolved_from_the_profile_at_call_time(home, monkeypatch):
-    import tools.browser_tool as bt
+def test_browser_backend_is_resolved_from_the_profile_at_call_time(home, monkeypatch):
+    from tools.browser_session_cloud import browser_backend_name
 
-    handler = bt._routed_handler("browser_back", lambda args, kw: '{"success": true}')
-    handler({}, task_id="t")
+    def handler():
+        return loop.record_browser_call(lambda legacy: legacy(lambda: '{"success": true}'), browser_backend_name)
+
+    handler()
     monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9/devtools/browser/x")  # `/browser connect` mid-session
-    handler({}, task_id="t")
+    handler()
 
     rows = sorted((d["backend"], d["outcome"]) for d, _ in _rows(home, "hermes.execution_backend.count"))
     assert rows == [("cdp", "success"), ("local", "success")]
