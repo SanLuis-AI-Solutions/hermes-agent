@@ -92,6 +92,7 @@ def test_leftover_camofox_settings_keep_browser_exec(tmp_path):
     """A browser.camofox block with no address is not a Camofox home: nothing is installed and core's
     browser toolset stays on (converting it would leave the home with no browser at all)."""
     home = _home(tmp_path, config={
+        "_config_version": 51,
         "browser": {"camofox": {"managed_persistence": True}},
         "platform_toolsets": {"cli": ["terminal", "browser", "file"]},
     })
@@ -123,6 +124,7 @@ def _resolved(home: Path, platform: str, monkeypatch) -> set[str]:
 
 def test_browser_becomes_camofox_where_core_carried_it(tmp_path, monkeypatch):
     home = _home(tmp_path, env="CAMOFOX_URL=http://localhost:9377\n", config={
+        "_config_version": 51,
         "platform_toolsets": {
             "cli": ["terminal", "browser", "file"],   # browser named directly
             "telegram": ["hermes-telegram"],          # through the composite
@@ -153,7 +155,7 @@ def test_browser_becomes_camofox_where_core_carried_it(tmp_path, monkeypatch):
 
 def test_conversion_is_never_undone(tmp_path):
     home = _home(tmp_path, env="CAMOFOX_URL=http://localhost:9377\n",
-                 config={"platform_toolsets": {"cli": ["terminal", "browser"]}})
+                 config={"_config_version": 51, "platform_toolsets": {"cli": ["terminal", "browser"]}})
     lcm._record_migration(home, next(f for f in lcm.LEFT_CORE if f.plugin == "camofox"))
     config = _config(home)
     assert config["_left_core_scoped"] == ["camofox"]
@@ -177,9 +179,9 @@ def test_conversion_is_never_undone(tmp_path):
 def test_homes_are_islands_a_b_c_a(tmp_path):
     """A (CAMOFOX_URL in .env) and C (cloud_provider: camofox) are migrated; B is never touched."""
     a = _home(tmp_path, "a", env="CAMOFOX_URL=http://localhost:9377\n",
-              config={"platform_toolsets": {"cli": ["browser"]}})
-    b = _home(tmp_path, "b", config={"platform_toolsets": {"cli": ["browser", "terminal"]}})
-    c = _home(tmp_path, "c", config={"browser": {"cloud_provider": "camofox"}})
+              config={"_config_version": 51, "platform_toolsets": {"cli": ["browser"]}})
+    b = _home(tmp_path, "b", config={"_config_version": 51, "platform_toolsets": {"cli": ["browser", "terminal"]}})
+    c = _home(tmp_path, "c", config={"_config_version": 51, "browser": {"cloud_provider": "camofox"}})
     b_before = (b / "config.yaml").read_bytes()
     calls: list[tuple[str, str]] = []
 
@@ -201,9 +203,51 @@ def test_homes_are_islands_a_b_c_a(tmp_path):
     assert _config(c)["agent"]["disabled_toolsets"] == ["browser"]
 
 
+def _migrate_config(home: Path) -> None:
+    from hermes_cli.config import migrate_config
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        migrate_config(interactive=False, quiet=True)
+    finally:
+        reset_hermes_home_override(token)
+
+
+_SPLIT_ENV = "CAMOFOX_URL=http://localhost:9377\n"
+_SPLIT_TOOLSETS = {"cli": ["terminal", "browser", "file"]}
+
+
+def test_upgrade_converts_after_the_config_step(tmp_path, monkeypatch):
+    """`hermes update` / Desktop migrate config.yaml to v52 before the left-core pass: the v52 step
+    records the core-era Camofox use, so the pass still converts the home."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    home = _home(tmp_path, env=_SPLIT_ENV, config={"_config_version": 51, "platform_toolsets": _SPLIT_TOOLSETS})
+    _migrate_config(home)
+    assert _config(home)["_config_version"] == 52
+    calls = []
+    assert lcm.migrate_home(home, install=_installer(home, calls), say=lambda _m: None) == ["camofox"]
+    config = _config(home)
+    assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox"]
+    assert config["agent"]["disabled_toolsets"] == ["browser"]
+
+
+@pytest.mark.parametrize("stamp", [51, 52])
+def test_home_from_after_the_split_keeps_browser_exec(tmp_path, monkeypatch, stamp):
+    """A home that crossed v52 without Camofox (or started at v52) and sets up the camofox plugin later
+    runs both side by side: the row never turns browser_exec off for it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    home = _home(tmp_path, config={"_config_version": stamp, "platform_toolsets": _SPLIT_TOOLSETS})
+    _migrate_config(home)
+    (home / "plugins" / "camofox").mkdir(parents=True)
+    (home / ".env").write_text(_SPLIT_ENV, encoding="utf-8")
+    before = (home / "config.yaml").read_bytes()
+    assert lcm.migrate_home(home, install=lambda name: pytest.fail("installed by the user"), say=print) == []
+    assert (home / "config.yaml").read_bytes() == before
+
+
 def test_catalog_miss_names_the_install_command(tmp_path, _fresh):
     (_fresh / "camofox.yaml").unlink()
-    home = _home(tmp_path, env="CAMOFOX_URL=http://localhost:9377\n")
+    home = _home(tmp_path, env="CAMOFOX_URL=http://localhost:9377\n", config={"_config_version": 51})
     said = []
     assert lcm.migrate_home(home, install=lambda name: pytest.fail("no catalog entry"), say=said.append) == []
     assert "cannot find in the plugin catalog yet" in said[0]

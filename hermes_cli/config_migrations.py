@@ -763,9 +763,12 @@ def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     # browser. `browser.backend` chose between the two, so it is dropped (an `off`, the opt-out of
     # browser_exec, gets a notice saying how to turn browsing off now). The AGENT_BROWSER_* settings
     # this home's .env gave agent-browser move to the browser.* keys the launcher reads, never over
-    # a value already set. .env itself is left alone.
+    # a value already set. .env itself is left alone. Camofox left core in the same release: a home
+    # running it is recorded now, from its pre-v52 files, so its left-core row converts it later
+    # while a newer home that installs the camofox plugin itself keeps browser_exec.
     from pathlib import Path
 
+    from hermes_cli.left_core_migration import record_core_use
     from hermes_constants import get_hermes_home
 
     config = read_raw_config()
@@ -793,9 +796,11 @@ def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     if moved:
         added.append(f"browser: {', '.join(moved)}")
         messages.append(f"  ✓ Moved agent-browser settings from .env to config.yaml: {', '.join(moved)}")
-    if not added:
+    used = record_core_use(Path(get_hermes_home()), config, 52)
+    if not added and not used:
         return
-    config["browser"] = browser
+    if added:
+        config["browser"] = browser
     _persist_migration(config)
     results["config_added"].extend(added)
     if not quiet:

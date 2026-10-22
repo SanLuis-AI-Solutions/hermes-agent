@@ -275,6 +275,11 @@ class LeftCoreFeature:
     plugin_key: str = ""
     # ``terminal.backend`` value the plugin registers: unknown-backend errors name the install command.
     terminal_backend: str = ""
+    # Config schema version that shipped without the feature, for a row whose conversion changes what a
+    # home runs (``replaces_toolsets``): only a home from before it ran the core feature, so the row fires
+    # only while the home's config is below it or when that version's config step found the feature in
+    # use (:func:`record_core_use`). A newer home that sets the plugin up itself keeps core's toolsets.
+    left_at: int = 0
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -315,7 +320,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                   "names are unchanged; they are the `camofox` toolset now, and core's `browser` toolset "
                   "(browser_exec) is turned off in this profile",
         secret_env=("CAMOFOX_API_KEY",), private_env=("CAMOFOX_URL",),
-        toolsets=("camofox",), off_platforms=("webhook",), replaces_toolsets=("browser",),
+        toolsets=("camofox",), off_platforms=("webhook",), replaces_toolsets=("browser",), left_at=52,
     ),
     LeftCoreFeature(
         plugin="singularity", label="Singularity/Apptainer terminal backend", in_use=singularity_in_use,
@@ -428,6 +433,36 @@ _SCOPED_KEY = "_left_core_scoped"  # config.yaml: rows whose toolset scope this 
 _INSTALLED_KEY = "_left_core_installed"
 
 
+# config.yaml: rows whose ``left_at`` config step found the core feature in use in this home.
+_USED_KEY = "_left_core_used"
+
+
+def record_core_use(home: Path, config: dict, version: int) -> bool:
+    """Config step *version* hook, before it writes *config* (*home*'s raw config.yaml, still showing the
+    core-era setup): mark every row that left core at *version* and that *home* uses. Returns whether
+    *config* changed. The launch home's process env counts, as at agent start."""
+    used = [feature for feature in LEFT_CORE if feature.left_at == version
+            and not _marked(config, _USED_KEY, feature) and feature.in_use(home, process_env=True)]
+    for feature in used:
+        _mark(config, _USED_KEY, feature)
+    return bool(used)
+
+
+def _predates_split(home: Path, feature: LeftCoreFeature) -> bool:
+    """*home* ran *feature* in core: its config is still below ``left_at`` (this pass ran before the
+    config step), or that step recorded the feature in use. A missing or unstamped config.yaml is
+    neither: the config step stamps (and records) an unstamped one, a missing one is a new home."""
+    if not feature.left_at:
+        return True
+    config = _read_config(home)
+    if _marked(config, _USED_KEY, feature):
+        return True
+    try:
+        return int(config["_config_version"]) < feature.left_at
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _marked(config: dict, key: str, feature: LeftCoreFeature) -> bool:
     done = config.get(key)
     return isinstance(done, list) and feature.plugin in map(str, done)
@@ -518,7 +553,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
     for feature in LEFT_CORE:
         if _marked(_read_config(home), _INSTALLED_KEY, feature):
             continue
-        if not feature.in_use(home, process_env=process_env):
+        if not _predates_split(home, feature) or not feature.in_use(home, process_env=process_env):
             continue
         present = plugin_present(feature.plugin, home)
         try:
