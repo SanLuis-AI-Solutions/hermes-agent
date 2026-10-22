@@ -417,6 +417,9 @@ def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packa
     if env is None:
         from tools.browser_session import build_browser_env
         env = build_browser_env()
+    # Loaded now, not first at teardown: stopping the browser from an atexit hook must not be this module's
+    # first import (Python refuses new atexit registrations during shutdown, orphaning the browser).
+    import tools.process_registry
     try:
         _prepare_dir(udd, ephemeral)
     except OSError as exc:

@@ -138,6 +138,31 @@ def test_two_processes_on_one_profile_never_share_an_ephemeral_profile(fake_chro
     assert (other / "Default" / "Cookies").read_text() == "the other process's session"
 
 
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass  # the fake browser is ours to stop if the exit teardown failed
+def test_a_bare_consumer_exiting_normally_stops_its_browser(fake_chromium):
+    """A script / eval that imports only the session layer and exits normally: the atexit teardown must stop
+    the browser (the teardown's process-tree helper is loaded before exit, not first imported during it)."""
+    script = ("import os, sys\n"
+              "import tools.browser_session  # registers the exit teardown\n"
+              "from tools import browser_launcher\n"
+              "browser_launcher.needs_chromium_sandbox_bypass = lambda: False\n"
+              "browser, err = browser_launcher.launch_chromium('bare', executable=sys.argv[1], headed=False,\n"
+              "                                                env=dict(os.environ), timeout=30)\n"
+              "print(browser.pid if browser else err, flush=True)\n")
+    done = subprocess.run([sys.executable, "-c", script, str(fake_chromium)], check=False,
+                          cwd=Path(__file__).resolve().parents[2],
+                          env=dict(os.environ), capture_output=True, text=True, timeout=120)
+    pid = int(done.stdout.strip().splitlines()[0])
+    deadline = time.monotonic() + 10
+    while launcher._pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    survived = launcher._pid_alive(pid)
+    if survived and str(fake_chromium) in Path(f"/proc/{pid}/cmdline").read_text(errors="replace"):
+        os.kill(pid, signal.SIGKILL)
+    assert not survived, done.stderr[-2000:]
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass  # the fake browser's reparented helper is ours to stop
 def test_stop_signals_the_browser_before_its_helpers_and_removes_the_ephemeral_profile(fake_chromium):
