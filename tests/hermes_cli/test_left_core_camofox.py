@@ -74,11 +74,10 @@ def _installer(home: Path, calls: list):
 @pytest.mark.parametrize(("env", "config", "in_use"), [
     ("CAMOFOX_URL=http://localhost:9377\n", None, True),                       # A: the address alone selected it
     ("", None, False),                                                          # B
-    ("", {"browser": {"camofox": {"managed_persistence": True}}}, True),        # C: Camofox settings of its own
     ("", {"browser": {"cloud_provider": "camofox"}}, True),
-    # A config core's save_config materialised: the old schema defaults are not a Camofox setup.
-    ("", {"browser": {"camofox": {"managed_persistence": False, "user_id": "",
-                                  "loopback_host_alias": "host.docker.internal"}}}, False),
+    # browser.camofox settings never selected Camofox: without an address core ran browser_exec.
+    ("", {"browser": {"camofox": {"managed_persistence": True, "user_id": "me"}}}, False),
+    ("CAMOFOX_URL=http://localhost:9377\n", {"browser": {"camofox": {"managed_persistence": True}}}, True),
     # A stored selection decides alone; a CDP endpoint won over Camofox.
     ("CAMOFOX_URL=http://localhost:9377\n", {"browser": {"cloud_provider": "browserbase"}}, False),
     ("CAMOFOX_URL=http://localhost:9377\n", {"browser": {"use_gateway": True}}, False),
@@ -87,6 +86,18 @@ def _installer(home: Path, calls: list):
 ])
 def test_camofox_in_use_reads_core_selection(tmp_path, env, config, in_use):
     assert lcm.camofox_in_use(_home(tmp_path, env=env, config=config)) is in_use
+
+
+def test_leftover_camofox_settings_keep_browser_exec(tmp_path):
+    """A browser.camofox block with no address is not a Camofox home: nothing is installed and core's
+    browser toolset stays on (converting it would leave the home with no browser at all)."""
+    home = _home(tmp_path, config={
+        "browser": {"camofox": {"managed_persistence": True}},
+        "platform_toolsets": {"cli": ["terminal", "browser", "file"]},
+    })
+    before = (home / "config.yaml").read_bytes()
+    assert lcm.migrate_home(home, install=lambda name: pytest.fail("not a Camofox home"), say=print) == []
+    assert (home / "config.yaml").read_bytes() == before
 
 
 def test_managed_env_url_counts(tmp_path):
@@ -164,11 +175,11 @@ def test_conversion_is_never_undone(tmp_path):
 
 
 def test_homes_are_islands_a_b_c_a(tmp_path):
-    """A (CAMOFOX_URL in .env) and C (browser.camofox only) are migrated; B is never touched."""
+    """A (CAMOFOX_URL in .env) and C (cloud_provider: camofox) are migrated; B is never touched."""
     a = _home(tmp_path, "a", env="CAMOFOX_URL=http://localhost:9377\n",
               config={"platform_toolsets": {"cli": ["browser"]}})
     b = _home(tmp_path, "b", config={"platform_toolsets": {"cli": ["browser", "terminal"]}})
-    c = _home(tmp_path, "c", config={"browser": {"camofox": {"managed_persistence": True}}})
+    c = _home(tmp_path, "c", config={"browser": {"cloud_provider": "camofox"}})
     b_before = (b / "config.yaml").read_bytes()
     calls: list[tuple[str, str]] = []
 

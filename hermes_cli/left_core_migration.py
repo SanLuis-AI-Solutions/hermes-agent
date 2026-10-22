@@ -191,14 +191,6 @@ def agent_imports_in_use(home: Path, *, process_env: bool = False) -> bool:
 
 
 
-# The values core's DEFAULT_CONFIG carried under browser.camofox. save_config materialised schema
-# defaults into config.yaml before it learned to strip them, so a mapping holding only these is a
-# copied template, not a Camofox setup.
-_CAMOFOX_CORE_DEFAULTS = {"managed_persistence": False, "user_id": "", "session_key": "",
-                          "adopt_existing_tab": False, "rewrite_loopback_urls": False,
-                          "loopback_host_alias": "host.docker.internal"}
-
-
 def _home_env(home: Path, name: str, *, process_env: bool) -> str:
     """*name* as *home*'s dotenv layers resolve it (:func:`~hermes_cli.env_loader.resolve_home_dotenv`),
     else, with *process_env* and for the launch home only, the process environment."""
@@ -214,27 +206,24 @@ def _home_env(home: Path, name: str, *, process_env: bool) -> str:
 def camofox_in_use(home: Path, *, process_env: bool = False) -> bool:
     """What made core run its Camofox backend for *home*, read the way core selected it
     (``tools/browser_camofox.is_camofox_mode``): a CDP endpoint (``browser.cdp_url`` or
-    ``BROWSER_CDP_URL``) won over Camofox; a stored ``browser.cloud_provider`` decided alone (Camofox
-    only when it names ``camofox``); with none stored, ``CAMOFOX_URL`` in its dotenv layers (the process
-    env too for the launch home with *process_env*), or Camofox settings of its own under
-    ``browser.camofox``. Config is read with the managed overlay applied; read-only."""
-    from gateway import config_loader
-    try:
-        browser = config_loader.read_yaml_layers(home).get("browser")
-    except Exception:  # malformed config.yaml: core read no selection from it either
-        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
-        browser = None
+    ``BROWSER_CDP_URL``) won over Camofox; a stored selection (``browser.cloud_provider``, or
+    ``use_gateway`` = the managed row) decided alone, Camofox only when it names ``camofox``; with
+    none stored, ``CAMOFOX_URL`` in its dotenv layers (the process env too for the launch home with
+    *process_env*). ``browser.camofox`` settings never selected it: a leftover block without an
+    address ran browser_exec. Config is the raw config.yaml, as core read it; read-only."""
+    from utils import is_truthy_value
+    browser = _read_config(home).get("browser")
     browser = browser if isinstance(browser, dict) else {}
     if str(browser.get("cdp_url") or "").strip() or _home_env(home, "BROWSER_CDP_URL", process_env=process_env):
         return False
-    selected = str(browser.get("cloud_provider") or "").strip().lower()
-    if selected or str(browser.get("use_gateway") or "").strip().lower() in ("1", "true", "yes", "on"):
+    if is_truthy_value(browser.get("use_gateway")):
+        return False
+    provider = browser.get("cloud_provider")
+    selected = str(provider).strip().lower() if provider is not None else ""
+    if selected:
         return selected == "camofox"
-    if _home_env(home, "CAMOFOX_URL", process_env=process_env):
-        return True
-    settings = browser.get("camofox")
-    return isinstance(settings, dict) and any(
-        key not in _CAMOFOX_CORE_DEFAULTS or value != _CAMOFOX_CORE_DEFAULTS[key] for key, value in settings.items())
+    return bool(_home_env(home, "CAMOFOX_URL", process_env=process_env))
+
 
 @dataclass(frozen=True)
 class LeftCoreFeature:
