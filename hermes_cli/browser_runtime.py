@@ -37,7 +37,7 @@ def _pm_executable() -> str | None:
 
 def _baked_executable() -> str | None:
     try:
-        value = BAKED_EXECUTABLE_FILE.read_text(encoding="utf-8").strip()
+        value = BAKED_EXECUTABLE_FILE.read_text(encoding="utf-8-sig").strip()
     except OSError:  # not a Hermes Docker image: nothing baked
         return None
     return value if value and os.path.isfile(value) else None
