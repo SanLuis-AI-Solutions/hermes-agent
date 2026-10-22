@@ -888,15 +888,23 @@ BROWSER_EXEC_SCHEMA = {
 # answers "is browser-harness importable"; surface policy lives with the session.
 from tools.registry import registry
 
+
+def _handle_browser_exec(args: dict, **kw):
+    """Registry handler; each call counts against the backend that served it (shared metrics, opt-in)."""
+    from hermes_cli.observability.shared_metrics_loop import record_browser_call
+    from tools.browser_session_cloud import browser_backend_name
+    return record_browser_call(lambda: browser_exec(
+        code=args.get("code", ""), session=args.get("session", "") or "",
+        timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S), task_id=kw.get("task_id"),
+        local=bool(args.get("local", False)),
+    ), browser_backend_name)
+
+
 registry.register(
     name="browser_exec",
     toolset="browser-use",
     schema=BROWSER_EXEC_SCHEMA,
-    handler=lambda args, **kw: browser_exec(
-        code=args.get("code", ""), session=args.get("session", "") or "",
-        timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S), task_id=kw.get("task_id"),
-        local=bool(args.get("local", False)),
-    ),
+    handler=_handle_browser_exec,
     check_fn=browser_exec_available,
     dynamic_schema_overrides=_dynamic_schema_overrides,
     emoji="🌐",

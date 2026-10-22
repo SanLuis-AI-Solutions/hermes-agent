@@ -291,20 +291,20 @@ def test_browser_backend_is_not_resolved_while_collection_is_off(home, monkeypat
         "hermes_cli.config.read_raw_config_readonly", lambda: {"telemetry": {"shared_metrics": {"enabled": False}}},
     )
     resolved = []
-    loop.record_browser_call(lambda legacy: legacy(lambda: '{"success": true}'), lambda: resolved.append(1) or "local")
+    loop.record_browser_call(lambda: '{"success": true}', lambda: resolved.append(1) or "local")
     assert resolved == []
 
 
 def test_browser_calls_name_the_backend_that_served_them(home):
-    served = loop.record_browser_call(lambda legacy: legacy(lambda: '{"success": true}'), lambda: "browserbase")
+    served = loop.record_browser_call(lambda: '{"success": true}', lambda: "browserbase")
     assert served == '{"success": true}'
-    loop.record_browser_call(lambda legacy: '{"success": false, "error": "x"}', lambda: "browserbase")
+    loop.record_browser_call(lambda: '{"success": false, "error": "x"}', lambda: "browserbase")
     with pytest.raises(RuntimeError):
-        loop.record_browser_call(lambda legacy: legacy(_raise), lambda: "some-private-provider")
+        loop.record_browser_call(_raise, lambda: "some-private-provider")
 
     rows = sorted((d["backend"], d["outcome"], d["error_class"]) for d, _ in _rows(home, "hermes.execution_backend.count"))
     assert rows == [
-        ("browserbase", "success", "none"), ("extension", "failed", "tool_error"), ("other", "failed", "exception"),
+        ("browserbase", "failed", "tool_error"), ("browserbase", "success", "none"), ("other", "failed", "exception"),
     ]
 
 
@@ -312,7 +312,7 @@ def test_browser_backend_is_resolved_from_the_profile_at_call_time(home, monkeyp
     from tools.browser_session_cloud import browser_backend_name
 
     def handler():
-        return loop.record_browser_call(lambda legacy: legacy(lambda: '{"success": true}'), browser_backend_name)
+        return loop.record_browser_call(lambda: '{"success": true}', browser_backend_name)
 
     handler()
     monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9/devtools/browser/x")  # `/browser connect` mid-session

@@ -313,8 +313,7 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
     endpoint = _resolve_cdp_endpoint()
     if not endpoint:
         return tool_error("No CDP endpoint is available. Run '/browser connect' to attach to a running Chrome, "
-                          "Brave, Chromium, or Edge browser, or set 'browser.cdp_url' in config.yaml. The Camofox "
-                          "backend is REST-only and does not expose CDP.", cdp_docs=CDP_DOCS_URL)
+                          "Brave, Chromium, or Edge browser, or set 'browser.cdp_url' in config.yaml.", cdp_docs=CDP_DOCS_URL)
     if not endpoint.startswith(("ws://", "wss://")):
         return tool_error(f"CDP endpoint is not a WebSocket URL: {endpoint!r}. Expected ws://... or wss://... — "
                           "the /browser connect resolver should have rewritten this. Check that a Chromium-family "
@@ -361,8 +360,8 @@ BROWSER_CDP_SCHEMA: dict[str, Any] = {
         "**Requires a reachable CDP endpoint.** Available when the user has run '/browser connect' to attach "
         "to a running Chrome, Brave, Chromium, or Edge browser, or when 'browser.cdp_url' is set in "
         "config.yaml. Not currently wired up for cloud backends (Browserbase, Browser Use, Firecrawl) — "
-        "those expose CDP per session but live-session routing is a follow-up. Camofox is REST-only and "
-        "will never support CDP. If the tool is in your toolset at all, a CDP endpoint is already reachable.\n\n"
+        "those expose CDP per session but live-session routing is a follow-up. If the tool is in your toolset "
+        "at all, a CDP endpoint is already reachable.\n\n"
         f"**CDP method reference:** {CDP_DOCS_URL} — use an available documentation lookup or extraction "
         "tool on a method's URL (e.g. '/tot/Page/#method-handleJavaScriptDialog') to look up parameters and "
         "return shape.\n\n"

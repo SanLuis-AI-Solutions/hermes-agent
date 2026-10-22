@@ -111,22 +111,20 @@ def needs_chromium_sandbox_bypass() -> bool:
 
 
 def _chromium_missing_hint() -> str:
-    try:
-        from hermes_cli.browser_runtime import chromium_missing_hint
-    except ImportError:  # LANE-PKG: remove this fallback once hermes_cli.browser_runtime.chromium_missing_hint lands
-        if running_in_docker():
-            return ("Chromium browser is missing. You're running in Docker — pull the latest image to get the "
-                    "bundled Chromium: docker pull ghcr.io/nousresearch/hermes-agent:latest")
-        return "Chromium browser is missing. Install it with: hermes pm install chromium"
+    from hermes_cli.browser_runtime import chromium_missing_hint
     return chromium_missing_hint()
 
 
 def _resolve_executable() -> Optional[str]:
     from hermes_cli.browser_runtime import chromium_executable
     exe = chromium_executable()
-    if exe and (os.path.isfile(exe) or shutil.which(exe)):
+    if not exe:
+        return None
+    if os.path.isfile(exe):
         return exe
-    return None
+    from hermes_platform.resolver import locate_command
+    found = locate_command(exe).command  # a bare command name pinned in browser.executable_path
+    return found[0] if found else None
 
 
 def _explicit_executable_configured(chromium_executable) -> bool:
