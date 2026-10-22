@@ -190,6 +190,52 @@ def agent_imports_in_use(home: Path, *, process_env: bool = False) -> bool:
     return (home / "import-sync.json").is_file()
 
 
+
+# The values core's DEFAULT_CONFIG carried under browser.camofox. save_config materialised schema
+# defaults into config.yaml before it learned to strip them, so a mapping holding only these is a
+# copied template, not a Camofox setup.
+_CAMOFOX_CORE_DEFAULTS = {"managed_persistence": False, "user_id": "", "session_key": "",
+                          "adopt_existing_tab": False, "rewrite_loopback_urls": False,
+                          "loopback_host_alias": "host.docker.internal"}
+
+
+def _home_env(home: Path, name: str, *, process_env: bool) -> str:
+    """*name* as *home*'s dotenv layers resolve it (:func:`~hermes_cli.env_loader.resolve_home_dotenv`),
+    else, with *process_env* and for the launch home only, the process environment."""
+    from hermes_cli.env_loader import resolve_home_dotenv
+    value = resolve_home_dotenv(home).get(name, "").strip()
+    if not value and process_env:
+        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        if hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home()):
+            value = os.environ.get(name, "").strip()
+    return value
+
+
+def camofox_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core run its Camofox backend for *home*, read the way core selected it
+    (``tools/browser_camofox.is_camofox_mode``): a CDP endpoint (``browser.cdp_url`` or
+    ``BROWSER_CDP_URL``) won over Camofox; a stored ``browser.cloud_provider`` decided alone (Camofox
+    only when it names ``camofox``); with none stored, ``CAMOFOX_URL`` in its dotenv layers (the process
+    env too for the launch home with *process_env*), or Camofox settings of its own under
+    ``browser.camofox``. Config is read with the managed overlay applied; read-only."""
+    from gateway import config_loader
+    try:
+        browser = config_loader.read_yaml_layers(home).get("browser")
+    except Exception:  # malformed config.yaml: core read no selection from it either
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        browser = None
+    browser = browser if isinstance(browser, dict) else {}
+    if str(browser.get("cdp_url") or "").strip() or _home_env(home, "BROWSER_CDP_URL", process_env=process_env):
+        return False
+    selected = str(browser.get("cloud_provider") or "").strip().lower()
+    if selected or str(browser.get("use_gateway") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return selected == "camofox"
+    if _home_env(home, "CAMOFOX_URL", process_env=process_env):
+        return True
+    settings = browser.get("camofox")
+    return isinstance(settings, dict) and any(
+        key not in _CAMOFOX_CORE_DEFAULTS or value != _CAMOFOX_CORE_DEFAULTS[key] for key, value in settings.items())
+
 @dataclass(frozen=True)
 class LeftCoreFeature:
     plugin: str                               # catalog entry name == installed plugin name
@@ -209,6 +255,12 @@ class LeftCoreFeature:
     toolsets: tuple[str, ...] = ()
     # Platforms whose core default composite (``hermes-<platform>``) never carried those toolsets.
     off_platforms: tuple[str, ...] = ()
+    # Core-era toolsets the plugin's toolsets replace while core keeps the name for something else
+    # (core's ``browser`` is browser_exec now; Camofox's tools live in the plugin's ``camofox``). The
+    # one-time scope conversion treats them as the plugin's toolsets for "did core carry it" and turns
+    # them off in the home: a saved platform list naming one names the plugin's toolsets instead, and
+    # ``agent.disabled_toolsets`` takes them for platforms on a default composite.
+    replaces_toolsets: tuple[str, ...] = ()
     # Gateway platform the plugin ships: a running gateway serves it only after a restart.
     platform: str = ""
     # Channel ownership core declared for that platform, kept while the plugin is absent (migration
@@ -264,6 +316,17 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         plugin="mcp-serve", label="Hermes as an MCP server", in_use=lambda home, **_: False,
         unchanged="the conversation tools keep their names; MCP clients change their args to [\"mcp-serve\"]",
         command="mcp-serve", old_command="hermes mcp serve",
+    ),
+    LeftCoreFeature(
+        # CAMOFOX_URL is an address, not a credential: core kept it out of children only through its
+        # `category: tool` OPTIONAL_ENV_VARS entry (the Tier 2 provider blocklist), as HASS_URL. The
+        # bearer token is a credential.
+        plugin="camofox", label="Camofox browser backend", in_use=camofox_in_use,
+        unchanged="CAMOFOX_URL, the browser.camofox settings and the browser_navigate/browser_click/... tool "
+                  "names are unchanged; they are the `camofox` toolset now, and core's `browser` toolset "
+                  "(browser_exec) is turned off in this profile",
+        secret_env=("CAMOFOX_API_KEY",), private_env=("CAMOFOX_URL",),
+        toolsets=("camofox",), off_platforms=("webhook",), replaces_toolsets=("browser",),
     ),
     LeftCoreFeature(
         plugin="singularity", label="Singularity/Apptainer terminal backend", in_use=singularity_in_use,
@@ -364,7 +427,7 @@ def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:
     """Whether core resolved *feature*'s toolsets on for a platform selecting *selection*: named
     directly, or through a ``hermes`` / ``hermes-<platform>`` composite that included them."""
     def carries(name: str) -> bool:
-        if name in feature.toolsets or name == "hermes":
+        if name in feature.toolsets or name in feature.replaces_toolsets or name == "hermes":
             return True
         return name.startswith("hermes-") and name[len("hermes-"):].replace("-", "_") not in feature.off_platforms
     return any(carries(str(name)) for name in selection)
@@ -390,13 +453,33 @@ def _mark(config: dict, key: str, feature: LeftCoreFeature) -> None:
     config[key] = sorted({*(map(str, done) if isinstance(done, list) else ()), feature.plugin})
 
 
+def _turn_off_replaced(config: dict, feature: LeftCoreFeature) -> None:
+    """Turn *feature*'s ``replaces_toolsets`` off in *config*: every saved platform list naming one names
+    the plugin's toolsets instead (so turning core's toolset back on later stays that platform's choice),
+    and ``agent.disabled_toolsets`` takes them, which also covers platforms on a default composite."""
+    from agent.skill_utils import parse_config_string_list
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    replaced = set(feature.replaces_toolsets)
+    saved = config.get("platform_toolsets")
+    for platform, value in (saved.items() if isinstance(saved, dict) else ()):
+        selection = parse_platform_toolsets_value(value)
+        if selection is not None and replaced & set(map(str, selection)):
+            kept = [item for item in selection if str(item) not in replaced]
+            saved[platform] = kept + [ts for ts in feature.toolsets if ts not in map(str, kept)]
+    agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    disabled = parse_config_string_list(agent.get("disabled_toolsets")) if agent.get("disabled_toolsets") else []
+    agent["disabled_toolsets"] = [*disabled, *sorted(replaced - set(disabled))]
+    config["agent"] = agent
+
+
 def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     """Keep *feature*'s core-era toolset scope, and mark it installed once its plugin is in *home*,
     in one config write.
 
     Scope: record the toolsets in ``known_plugin_toolsets[platform]`` (= off) for every platform
     where core had them off: a saved ``platform_toolsets`` list that does not carry them, or no list
-    on an ``off_platforms`` platform. Platforms core resolved them on for are left alone. A one-time
+    on an ``off_platforms`` platform. Platforms core resolved them on for are left alone, except that
+    a row's ``replaces_toolsets`` go off everywhere (:func:`_turn_off_replaced`). A one-time
     conversion per home and row, independent of installation: a plugin installed before the update
     (it stays inert on a core that still ships the feature) still needs it. Completion is marked
     under ``_left_core_scoped`` so a later run never undoes a choice the user made since
@@ -428,6 +511,8 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
                 known[platform] = sorted({*map(str, current), *missing})
         if known:
             config["known_plugin_toolsets"] = known
+        if feature.replaces_toolsets:
+            _turn_off_replaced(config, feature)
         _mark(config, _SCOPED_KEY, feature)
     atomic_config_write(path, config)
 
