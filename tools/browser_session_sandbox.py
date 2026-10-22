@@ -45,9 +45,9 @@ def _start_chromium(env, user, exe: str, udd: str, child_env: dict) -> int:
     from tools.bot_desktop.browser import SHARED_PROFILE_ARGS
     from tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, build_chromium_argv
     from tools.environments import streams
-    # Container: no user namespaces for Chromium's own sandbox, so the bypass flags always apply; the
-    # shared-profile flags match the dock's icon on this same profile.
-    argv = build_chromium_argv(exe, udd, packaged=False, headed=True,
+    # Container: no user namespaces for Chromium's own sandbox, so the bypass flags always apply (this
+    # host's facts say nothing about the sandbox); the shared-profile flags match the dock's icon.
+    argv = build_chromium_argv(exe, udd, packaged=False, headed=True, sandbox_bypass=False,
                                extra_args=(*SHARED_PROFILE_ARGS, *CHROMIUM_SANDBOX_BYPASS_ARGS))
     argv = list(dict.fromkeys(argv))
     script = (f"mkdir -p {shlex.quote(udd)} && rm -f {shlex.quote(udd)}/DevToolsActivePort && "

@@ -203,10 +203,12 @@ def test_headed_only_when_configured_and_a_display_exists(headed, display, expec
 def test_packaged_only_flags_never_reach_an_explicit_binary(monkeypatch):
     monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: True)
     monkeypatch.setattr("tools.browser_session_cloud.chromium_args", lambda: ["--lang=de"])
-    packaged = launcher.build_chromium_argv("/c", "/p", packaged=True, headed=False)
-    real = launcher.build_chromium_argv("/c", "/p", packaged=False, headed=True)
+    packaged = launcher.build_chromium_argv("/c", "/p", packaged=True, headed=False, sandbox_bypass=True)
+    dock = launcher.build_chromium_argv("/c", "/p", packaged=False, headed=True, sandbox_bypass=True)
+    real = launcher.build_chromium_argv("/c", "/p", packaged=False, headed=True, sandbox_bypass=False)
     assert "--password-store=basic" in packaged and "--password-store=basic" not in real
     assert "--headless=new" in packaged and "--headless=new" not in real
-    for argv in (packaged, real):
-        assert set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) <= set(argv)
+    assert set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) <= set(packaged) and set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) <= set(dock)
+    assert not set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) & set(real)  # the user's own browser keeps its sandbox
+    for argv in (packaged, dock, real):
         assert "--lang=de" in argv and argv[-1] == "about:blank"

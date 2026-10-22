@@ -91,7 +91,8 @@ def _launch(browser_name: str) -> tuple[Optional[str], Optional[str]]:
         return None, f"{_RP}the real browser binary for '{browser_name}' could not be found. Reinstall it or turn the toggle off."
     ensure_screen_for_headed_chromium()
     launched, err = launch_chromium(REAL_PROFILE_KEY, executable=real_binary, user_data_dir=copy_dir,
-                                    ephemeral=False, extra_args=_REAL_PROFILE_EXTRA_FLAGS, timeout=30.0)
+                                    ephemeral=False, extra_args=_REAL_PROFILE_EXTRA_FLAGS, timeout=30.0,
+                                    sandbox_bypass=False)
     if launched is None:
         return None, f"{_RP}the real-profile browser failed to start: {err}"
     logger.info("real-profile browser ready for %s at %s (%s)", browser_name, launched.http_url, copy_dir)

@@ -201,8 +201,12 @@ def _configured_chromium_args() -> list[str]:
 
 
 def build_chromium_argv(executable: str, user_data_dir: str, *, packaged: bool, headed: bool,
-                        extra_args=()) -> list[str]:
-    """The launch argv (pure in its inputs + host sandbox facts + ``browser.chromium_args``)."""
+                        sandbox_bypass: bool, extra_args=()) -> list[str]:
+    """The launch argv (pure in its inputs + host sandbox facts + ``browser.chromium_args``).
+
+    ``sandbox_bypass`` lets the host policy (root, Docker, AppArmor userns) add
+    ``CHROMIUM_SANDBOX_BYPASS_ARGS``; it is False for the user's own browser binary, which is never
+    started without its sandbox."""
     argv = [executable, "--remote-debugging-port=0", f"--user-data-dir={user_data_dir}", *_BASE_FLAGS]
     if packaged:
         argv += _PACKAGED_ONLY_FLAGS
@@ -211,7 +215,7 @@ def build_chromium_argv(executable: str, user_data_dir: str, *, packaged: bool, 
     if not headed:
         argv.append("--headless=new")
     configured = _configured_chromium_args()
-    if needs_chromium_sandbox_bypass():
+    if sandbox_bypass and needs_chromium_sandbox_bypass():
         argv += [flag for flag in CHROMIUM_SANDBOX_BYPASS_ARGS if flag not in configured]
     argv += [str(a) for a in extra_args]
     argv += configured
@@ -359,14 +363,15 @@ def _attach_running(key: str, user_data_dir: str, ephemeral: bool, home_key: str
 
 def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir: Optional[str] = None,
                     ephemeral: bool = True, headed: Optional[bool] = None, extra_args=(),
-                    env: Optional[dict] = None, timeout: Optional[float] = None,
+                    env: Optional[dict] = None, timeout: Optional[float] = None, sandbox_bypass: bool = True,
                     ) -> tuple[Optional[LaunchedBrowser], Optional[str]]:
     """Start (or reuse) the Chromium for ``key``; ``(browser, None)`` or ``(None, error)``.
 
     ``executable=None`` resolves the packaged Chromium (``chromium_ready``); an explicit executable (the
     Bot Desktop's, the user's real browser) is used as given. ``user_data_dir=None`` is a fresh
     ephemeral profile under ``<HERMES_HOME>/cache/browser/chromium/``; a persistent dir that already has
-    a live Chromium on it is ATTACHED (``owned=False``, never killed)."""
+    a live Chromium on it is ATTACHED (``owned=False``, never killed). ``sandbox_bypass=False`` (the
+    user's real browser) never gets the host's sandbox-bypass flags."""
     from hermes_constants import hermes_home_key
     with _key_lock(key):  # one launch per key; other keys launch concurrently
         existing = get_browser(key)
@@ -386,7 +391,8 @@ def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir
                 _browsers[key] = attached
             return attached, None
         return _launch_owned(key, executable, udd, ephemeral=ephemeral, packaged=packaged, headed=headed,
-                             extra_args=extra_args, env=env, timeout=timeout, home_key=home_key)
+                             extra_args=extra_args, env=env, timeout=timeout, home_key=home_key,
+                             sandbox_bypass=sandbox_bypass)
 
 
 def _key_lock(key: str) -> threading.Lock:
@@ -395,7 +401,8 @@ def _key_lock(key: str) -> threading.Lock:
 
 
 def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packaged: bool, headed,
-                  extra_args, env, timeout, home_key: str) -> tuple[Optional[LaunchedBrowser], Optional[str]]:
+                  extra_args, env, timeout, home_key: str, sandbox_bypass: bool,
+                  ) -> tuple[Optional[LaunchedBrowser], Optional[str]]:
     if env is None:
         from tools.browser_session import build_browser_env
         env = build_browser_env()
@@ -404,7 +411,7 @@ def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packa
     except OSError as exc:
         return None, f"Could not create the browser profile directory {udd}: {exc}"
     argv = build_chromium_argv(executable, udd, packaged=packaged, headed=_resolve_headed(headed, env),
-                               extra_args=extra_args)
+                               sandbox_bypass=sandbox_bypass, extra_args=extra_args)
     try:
         proc = _spawn(argv, env, udd)
     except (OSError, subprocess.SubprocessError) as exc:

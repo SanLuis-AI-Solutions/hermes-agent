@@ -227,7 +227,8 @@ def _agent_sandbox_flags(exe: str) -> set:
     """The sandbox-bypass flags the agent's launch of ``exe`` on the shared profile carries."""
     from tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, build_chromium_argv
 
-    argv = build_chromium_argv(exe, "/p/dir", packaged=False, headed=True, extra_args=browser.SHARED_PROFILE_ARGS)
+    argv = build_chromium_argv(exe, "/p/dir", packaged=False, headed=True, sandbox_bypass=True,
+                               extra_args=browser.SHARED_PROFILE_ARGS)
     return set(argv) & set(CHROMIUM_SANDBOX_BYPASS_ARGS)
 
 

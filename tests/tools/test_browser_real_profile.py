@@ -239,7 +239,9 @@ class TestRealProfileCdpLaunch:
         ``--headless=new`` shares the profile's normal cookie store (unlike legacy ``--headless``), and
         cookie decryption is unaffected by headless — the drop we avoid comes from ``--use-mock-keychain`` /
         ``--password-store=basic``, so neither may reach this launch: the copied auth/login state still
-        loads. The copy is persistent: the launch must never wipe it like an ephemeral profile.
+        loads. The copy is persistent: the launch must never wipe it like an ephemeral profile. The user's
+        own browser is never started without its sandbox, even where the packaged Chromium needs the
+        bypass (root / Docker / AppArmor userns).
         """
         copy_dir = tmp_path / "copy"
         (copy_dir / "Default").mkdir(parents=True)
@@ -249,7 +251,7 @@ class TestRealProfileCdpLaunch:
         monkeypatch.setattr(launcher, "_records_dir", lambda: records)
         monkeypatch.setattr(launcher, "_start_time", lambda pid: None)
         monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
-        monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: False)
+        monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: True)
         captured = {}
 
         class FakeChrome:
@@ -281,6 +283,7 @@ class TestRealProfileCdpLaunch:
         # The chrome launch itself is headless (no window, no focus steal).
         assert "--headless=new" in argv
         assert "--password-store=basic" not in argv and "--use-mock-keychain" not in argv
+        assert not set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) & set(argv)
         assert (copy_dir / "Default" / "Cookies").read_text(encoding="utf-8") == "copied-cookies"
         running = launcher.get_browser(rp.REAL_PROFILE_KEY)
         assert running is not None and running.owned and not running.ephemeral
