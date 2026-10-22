@@ -262,13 +262,15 @@ def is_local_backend() -> bool:
     return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
 
 
-def browser_backend_name() -> str:
+def browser_backend_name(ran_local: bool = False) -> str:
     """Shared-metrics label for the active profile's backend in session-creation precedence
-    (CDP override > cloud provider > local engine). Config reads only, no network I/O."""
+    (CDP override > cloud provider > local engine). ``ran_local``: the call ran on a LOCAL browser (the
+    hybrid ``::local`` sidecar, a cloud failure's local fallback, the real profile), so a configured
+    provider did not serve it. Config reads only, no network I/O."""
     from tools.browser_session_cdp import get_cdp_override_raw
     if get_cdp_override_raw():
         return "cdp"
-    provider = get_cloud_provider()
+    provider = None if ran_local else get_cloud_provider()
     if provider is not None:
         return str(getattr(provider, "name", "") or "other")
     return "lightpanda" if get_browser_engine() == "lightpanda" else "local"

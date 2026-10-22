@@ -308,18 +308,63 @@ def test_browser_calls_name_the_backend_that_served_them(home):
     ]
 
 
-def test_browser_backend_is_resolved_from_the_profile_at_call_time(home, monkeypatch):
-    from tools.browser_session_cloud import browser_backend_name
+@pytest.fixture
+def browser_exec_route(monkeypatch):
+    """The real ``browser_exec`` registry handler under a configured Browserbase provider, cut at the session
+    layer (``get_session_info``) and the CLI process boundary; nothing launches or connects."""
+    import socket
+    import subprocess
+    from types import SimpleNamespace
 
-    def handler():
-        return loop.record_browser_call(lambda: '{"success": true}', browser_backend_name)
+    import tools.browser_session as bs
+    import tools.browser_session_cloud as bs_cloud
+    import tools.browser_supervisor as supervisor
+    import tools.browser_use_cli as bu
 
-    handler()
+    route = SimpleNamespace(fallback=False)
+
+    def session_info(key):
+        if bs.is_local_sidecar_key(key) or route.fallback:
+            return {"cdp_url": f"ws://127.0.0.1:47000/devtools/browser/{key}", "features": {"local": True},
+                    **({"fallback_from_cloud": True, "fallback_reason": "429"} if route.fallback else {})}
+        return {"cdp_url": "wss://cloud.example/x"}
+
+    def getaddrinfo(host, *a, **kw):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.0.1" if host == "192.168.0.1" else "93.184.216.34", 0))]
+
+    bs_cloud.reset_caches()
+    monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: SimpleNamespace(name="browserbase"))
+    monkeypatch.setattr(bs_cloud, "auto_local_for_private_urls", lambda: True)
+    monkeypatch.setattr(bs, "get_session_info", session_info)
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(supervisor, "SUPERVISOR_REGISTRY", SimpleNamespace(get_or_start=lambda **kw: None))
+    monkeypatch.setattr(bu, "_find_cli", lambda: ["browser-use"])
+    monkeypatch.setattr(bu, "_run_cli_killing_process_group",
+                        lambda cmd, code, env, timeout: subprocess.CompletedProcess(cmd, 0, "ok", ""))
+    monkeypatch.setattr(bu, "_exec_route_is_sidecar", {})
+    monkeypatch.setattr(bu, "_driven_daemons", {})
+    yield route
+    bs_cloud.reset_caches()
+
+
+def test_browser_exec_counts_against_the_browser_that_actually_served_it(home, monkeypatch, browser_exec_route):
+    """A call the configured provider served names it; a hybrid ``::local`` sidecar call (private URL) or a
+    call the session layer fell back to local Chromium for ran locally and must not; a `/browser connect`
+    published mid-session is read at call time."""
+    from tools.browser_use_cli import _handle_browser_exec
+
+    def call(code, task_id):
+        assert json.loads(_handle_browser_exec({"code": code}, task_id=task_id))["success"] is True
+
+    call('new_tab("https://example.com/")', "cloud")
+    call('new_tab("http://192.168.0.1:9120/login")', "sidecar")
+    browser_exec_route.fallback = True
+    call('new_tab("https://example.com/")', "fallback")
     monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9/devtools/browser/x")  # `/browser connect` mid-session
-    handler()
+    call('new_tab("https://example.com/")', "connected")
 
-    rows = sorted((d["backend"], d["outcome"]) for d, _ in _rows(home, "hermes.execution_backend.count"))
-    assert rows == [("cdp", "success"), ("local", "success")]
+    rows = {d["backend"]: v for d, v in _rows(home, "hermes.execution_backend.count") if d["outcome"] == "success"}
+    assert rows == {"browserbase": 1, "local": 2, "cdp": 1}
 
 
 def _raise():
