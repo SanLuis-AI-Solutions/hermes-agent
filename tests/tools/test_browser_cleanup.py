@@ -217,3 +217,71 @@ class TestSharedBrowserSessions:
 
         assert bs.get_session_info("a")["cdp_url"] == live
         assert launcher.get_browser(key) is not None, "b's live browser must survive a's rebuild"
+
+
+class _FakeSandbox:
+    """The terminal sandbox's exec stream: one Chromium on the shared profile, launched by ``setsid``."""
+
+    def __init__(self):
+        self.running = None
+        self.killed = []
+
+    def run_in(self, env, argv, **kw):
+        cmd = " ".join(argv)
+        if "setsid" in cmd:
+            self.running = 4242
+            return _Completed(0, b"4242\n")
+        if "/dev/tcp" in cmd or argv[0] == "cat":
+            return _Completed(0, b"9222\n/devtools/browser/abc\n") if self.running else _Completed(1)
+        if argv[0] == "kill":
+            self.killed.append(int(argv[-1]))
+            self.running = None
+            return _Completed(0)
+        return _Completed(1)
+
+
+class _Completed:
+    def __init__(self, returncode, stdout=b""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, b""
+
+
+@pytest.fixture
+def fake_sandbox(monkeypatch, isolated_sessions):
+    from tools import browser_session_sandbox
+    from tools.bot_desktop import runtime, sandbox_host
+    from tools.environments import streams
+    sandbox, env = _FakeSandbox(), object()
+    monkeypatch.setattr(browser_session_sandbox, "_launched", {}, raising=False)
+    monkeypatch.setattr(streams, "run_in", sandbox.run_in)
+    monkeypatch.setattr(streams, "forward_port", lambda env, port, user=None: 50000 + port)
+    monkeypatch.setattr(streams, "sandbox_temp_dir", lambda env: "/tmp")  # no-tmp: ok — sandbox-side path
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda create=False: env)
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":5"})
+    monkeypatch.setattr(sandbox_host, "_user_for", lambda env: "hermes")
+    monkeypatch.setattr(sandbox_host, "browser_profile_dir", lambda env: "/home/hermes/.bot-browser")
+    monkeypatch.setattr(sandbox_host, "chromium_executable", lambda env: "/usr/bin/chromium")
+    return sandbox
+
+
+class TestSandboxSharedBrowser:
+    """Every session placed in the terminal sandbox shares the one in-sandbox Chromium on the dock's profile."""
+
+    def test_the_sandbox_browser_is_stopped_only_after_its_last_session_tears_down(self, fake_sandbox,
+                                                                                 isolated_sessions):
+        from tools.browser_session_sandbox import create_sandbox_session
+        isolated_sessions["task-A"] = create_sandbox_session("task-A")  # launches it
+        isolated_sessions["task-B"] = create_sandbox_session("task-B")  # attaches to it
+
+        lifecycle.cleanup_single_session("task-A")
+        assert fake_sandbox.killed == [] and fake_sandbox.running, "B still uses the sandbox browser"
+
+        lifecycle.cleanup_single_session("task-B")
+        assert fake_sandbox.killed == [4242]
+
+    def test_a_sandbox_session_is_dead_once_its_chromium_is_gone(self, fake_sandbox):
+        from tools.browser_session_sandbox import create_sandbox_session
+        info = create_sandbox_session("task-A")
+        assert bs._backend_dead(info) is False
+
+        fake_sandbox.running = None  # crashed inside the sandbox
+        assert bs._backend_dead(info) is True

@@ -303,6 +303,9 @@ def _backend_dead(session_info: dict[str, Any]) -> bool:
         from tools.browser_lightpanda import get_server
         server = get_server(session_info.get("session_name", ""))
         return server is None or not server.is_alive()
+    if features.get("sandbox"):
+        from tools.browser_session_sandbox import sandbox_browser_alive
+        return not sandbox_browser_alive(session_info)
     launcher_key = session_info.get("launcher_key") or (
         "hermes-real-profile" if features.get("real_profile") else None)
     if launcher_key:

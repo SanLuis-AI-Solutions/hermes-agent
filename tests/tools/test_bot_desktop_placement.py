@@ -365,7 +365,7 @@ def test_sandbox_cdp_endpoint_is_rewritten_to_the_forwarded_local_port(monkeypat
     monkeypatch.setattr(sandbox_host, "browser_profile_dir", lambda e: "/home/pn/.hermes/bot-desktop/browser-profile")
 
     def run_in(env, argv, **_kw):
-        out = b"9223\n/devtools/browser/abc\n" if argv[0] == "cat" else b""
+        out = b"9223\n/devtools/browser/abc\n" if "DevToolsActivePort" in " ".join(argv) else b""
         return subprocess.CompletedProcess(argv, 0, out, b"")
     monkeypatch.setattr(streams, "run_in", run_in)
     monkeypatch.setattr(streams, "forward_port", lambda env, port, *, remote_host="127.0.0.1", user=None: 45000 + port % 7)

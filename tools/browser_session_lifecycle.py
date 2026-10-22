@@ -3,7 +3,8 @@ points and the atexit sweep.
 
 Teardown per session kind (CDP supervisor stopped first, so our WebSocket closes before the endpoint):
 cloud → ``provider.close_session``; Lightpanda → ``stop_lightpanda``; launcher Chromium → ``stop_browser``
-(a shared persistent profile only once no other session uses it); sandbox → SIGTERM inside the sandbox;
+(a shared persistent profile only once no other session uses it); sandbox → SIGTERM inside the sandbox
+once no other session uses it;
 real profile → shared, terminated at exit / consent-off; CDP override → nothing (the user's browser).
 """
 
@@ -132,11 +133,13 @@ def release_session_backend(cache_key: str, session_info: dict[str, Any]) -> Non
     if features.get("lightpanda"):
         from tools.browser_lightpanda import stop_lightpanda
         stop_lightpanda(session_info.get("session_name", ""))
+    launcher_key = session_info.get("launcher_key")
+    if not launcher_key or _launcher_key_in_use(launcher_key, session_info):
+        return  # nothing launched for it, or a shared browser another live session still uses
     if features.get("sandbox"):
         from tools.browser_session_sandbox import stop_sandbox_browser
         stop_sandbox_browser(session_info)
-    launcher_key = session_info.get("launcher_key")
-    if launcher_key and not _launcher_key_in_use(launcher_key, session_info):
+    else:
         from tools.browser_launcher import stop_browser
         stop_browser(launcher_key)
 
