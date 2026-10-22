@@ -475,11 +475,6 @@ DEFAULT_CONFIG = {
         # Read by the `camofox` catalog plugin (Camofox left core). An empty free-form mapping, so
         # `hermes config set browser.camofox.<key>` is accepted and user values are never stripped.
         "camofox": {},
-        # Authenticated browser-extension controller lane: a registered extension can become the
-        # exact controller for a session's browser_cdp calls (fail-closed once bound). Local API
-        # registration also requires the API server bearer key. developer_mode gates the privileged
-        # browser_cdp capabilities.
-        "extension_control": {"enabled": False, "developer_mode": False},
     },
     # Stale git worktree lifecycle (`hermes -w`, `/worktree new`, subagent isolation, Desktop). The
     # sweep runs at `hermes -w` startup and every 6h from the cron ticker over every repo Hermes made

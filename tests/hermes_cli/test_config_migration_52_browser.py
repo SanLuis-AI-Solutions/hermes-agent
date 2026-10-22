@@ -184,3 +184,16 @@ def test_profiles_are_islands_a_b_a(tmp_path, monkeypatch, capsys):
     assert _raw(b)["browser"] == {"inactivity_timeout": 300}
     assert "browser_exec" not in out_b and "agent-browser" not in out_b
     assert "browser_exec" not in out_a2 and "agent-browser" not in out_a2
+
+
+@pytest.mark.parametrize("stamp", [51, None])
+def test_extension_control_block_is_dropped(tmp_path, monkeypatch, stamp):
+    """Browser-extension control left with the built-in browser tools; nothing reads the key now."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    config = {"browser": {"extension_control": {"enabled": True, "developer_mode": False}, "headed": True}}
+    if stamp is not None:
+        config["_config_version"] = stamp
+    home = _home(tmp_path / "a", config)
+    results = _migrate(home, quiet=True)
+    assert _raw(home)["browser"] == {"headed": True}
+    assert "removed browser.extension_control" in results["config_added"]

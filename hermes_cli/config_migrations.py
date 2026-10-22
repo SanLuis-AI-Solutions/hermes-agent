@@ -781,7 +781,8 @@ def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     # this home's .env gave agent-browser move to the browser.* keys the launcher reads, never over
     # a value that already won over them (:func:`_config_decided`). .env itself is left alone. Camofox left core in the same release: a home
     # running it is recorded now, from its pre-v52 files, so its left-core row converts it later
-    # while a newer home that installs the camofox plugin itself keeps browser_exec.
+    # while a newer home that installs the camofox plugin itself keeps browser_exec. The
+    # browser-extension control lane dispatched to the removed tools, so its key goes too.
     from pathlib import Path
 
     from hermes_cli.left_core_migration import record_core_use
@@ -801,6 +802,9 @@ def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
             messages.append(f"  ✓ {note[0].upper()}{note[1:]}.")
         else:
             added.append("removed browser.backend")
+    if "extension_control" in browser:
+        browser.pop("extension_control")
+        added.append("removed browser.extension_control")
     moved = []
     for name, value in _agent_browser_env(Path(get_hermes_home())).items():
         key = dict(_AGENT_BROWSER_ENV_KEYS)[name]
@@ -970,7 +974,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
             "admitted to the target profile's running gateway and tracked by receipt, so cron no "
             "longer runs (or times out) a Bot Chat turn of its own."),
         extra_guard=lambda raw: "bot_chat_delivery_timeout_seconds" in raw)),
-    # 51 -> 52: browser.backend dropped, AGENT_BROWSER_* .env settings -> browser.* (see _migrate_to_52).
+    # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
+    # browser.* (see _migrate_to_52).
     (52, _migrate_to_52),
 )
 
