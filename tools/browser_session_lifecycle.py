@@ -337,6 +337,7 @@ def start_cleanup_thread() -> None:
     with bs._cleanup_lock:
         if bs._cleanup_thread is None or not bs._cleanup_thread.is_alive():
             bs._cleanup_running = True
+            # health: allow HX012 -- process-wide janitor: each teardown binds its own session owner scope
             bs._cleanup_thread = threading.Thread(target=_janitor, daemon=True, name="browser-cleanup")
             bs._cleanup_thread.start()
             logger.info("Started browser inactivity janitor (timeout: %ss)", bs.BROWSER_SESSION_INACTIVITY_TIMEOUT)

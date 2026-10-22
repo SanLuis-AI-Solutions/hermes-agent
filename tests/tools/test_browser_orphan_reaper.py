@@ -5,6 +5,7 @@ identity is proven (``tools.browser_launcher.reap_orphaned_browsers``, driven by
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
