@@ -340,12 +340,12 @@ class TestRealProfileCdpLaunch:
                  patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")) as snapshot, \
                  patch("requests.get", return_value=version):
                 cdp, err = rp.real_profile_cdp()
+            attached = launcher.get_browser(rp.real_profile_key())  # while the stand-in still runs
         finally:
             chrome.kill()
             chrome.wait(timeout=30)
         assert (cdp, err) == ("ws://127.0.0.1:41000/devtools/browser/x", None)
         snapshot.assert_not_called()
-        attached = launcher.get_browser(rp.REAL_PROFILE_KEY)
         assert attached is not None and attached.owned is False and attached.pid == chrome.pid
 
     def test_the_browser_holding_a_dir_is_found_by_its_argv_never_a_helper(self, tmp_path):
