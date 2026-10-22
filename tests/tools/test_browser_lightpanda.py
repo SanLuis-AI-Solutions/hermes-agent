@@ -211,6 +211,20 @@ class TestLightpandaSessionCreation:
         bs._create_local_session("task-1")
         assert calls[0][1] is True
 
+    def test_consented_real_profile_with_lightpanda_reports_the_conflict(self, monkeypatch):
+        """Real profile precedes Lightpanda, but Lightpanda cannot load a Chromium profile: the session is
+        Lightpanda and carries the fallback note naming the engine conflict."""
+        calls = []
+        monkeypatch.setattr(lp, "using_lightpanda_engine", lambda: True)
+        monkeypatch.setattr(bs_cloud, "is_local_backend", lambda: True)
+        monkeypatch.setattr(bs_cloud, "use_real_profile", lambda: True)
+        monkeypatch.setattr(lp, "launch_lightpanda",
+                            lambda name, **kw: calls.append((name, False)) or (_FakeServer(), None))
+        info = bs._create_local_session("task-1")
+        assert info["features"] == {"local": True, "lightpanda": True}
+        assert "lightpanda" in info["real_profile_unavailable"]
+        assert len(calls) == 1
+
     def test_launch_failure_raises(self, monkeypatch):
         self._common(monkeypatch, launch=(None, "no lightpanda binary was found"))
         with pytest.raises(RuntimeError, match="no lightpanda binary"):
