@@ -212,6 +212,30 @@ class TestLeakedBrowserOfThisProcess:
         assert records.terminated == []
 
 
+def test_browser_attached_after_its_owner_crashed_is_never_reaped_while_in_use(records, tmp_path, monkeypatch):
+    """The next process ATTACHES to a crashed owner's persistent-profile Chromium (owned=False). The record
+    still names the dead owner; this process takes it over, so no reaper kills the browser it handed out."""
+    udd = str(tmp_path / "persistent-profile")
+    monkeypatch.setattr(launcher, "_pid_alive", _alive(4242))  # the browser survived, its owner did not
+    monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+    monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+    monkeypatch.setattr(launcher, "running_instance", lambda d: (41234, "/devtools/browser/abc", 4242) if d == udd else None)
+    from hermes_constants import hermes_home_key
+    crashed = launcher.LaunchedBrowser(key=f"profile:{udd}", pid=4242, start_time=777, cdp_url="", http_url="",
+                                       user_data_dir=udd, owned=True, ephemeral=False, home_key=hermes_home_key())
+    record = launcher._record_path(crashed)  # where the crashed owner left it
+    record.write_text(json.dumps({"owner_pid": _DEAD_OWNER, "owner_start_time": None, "pid": 4242, "start_time": 777,
+                                  "user_data_dir": udd, "home_key": crashed.home_key, "ephemeral": False}))
+
+    attached, err = launcher.launch_chromium(f"profile:{udd}", executable="/opt/chrome", user_data_dir=udd,
+                                             ephemeral=False)
+    assert err is None and attached.owned is False
+
+    assert launcher.reap_orphaned_browsers() == 0
+    assert records.terminated == []
+    assert json.loads(record.read_text())["owner_pid"] == os.getpid()  # other processes see a live owner
+
+
 class TestPrivatePerProfileRecords:
     """Launcher state lives in a private per-profile dir: a records dir that is not a real directory of this
     user closed to other writers is never read, and the reaper deletes nothing outside the profile's

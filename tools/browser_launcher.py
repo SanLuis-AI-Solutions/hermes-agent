@@ -362,8 +362,10 @@ def _attach_running(key: str, user_data_dir: str, ephemeral: bool, home_key: str
         return None
     port, path, pid = running
     logger.info("browser: attaching to the Chromium already running on %s (pid %s)", user_data_dir, pid)
-    return _make_browser(key, port, path, pid=pid, start_time=_start_time(pid), user_data_dir=user_data_dir,
-                         owned=False, ephemeral=False, home_key=home_key)
+    browser = _make_browser(key, port, path, pid=pid, start_time=_start_time(pid), user_data_dir=user_data_dir,
+                            owned=False, ephemeral=False, home_key=home_key)
+    _adopt_record(browser)
+    return browser
 
 
 def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir: Optional[str] = None,
@@ -632,9 +634,20 @@ def _is_recorded_browser(record: dict, home: str) -> bool:
     return True
 
 
-def _tracked_here(record: dict) -> bool:
+def _tracked_browser(record: dict) -> Optional[LaunchedBrowser]:
     with _lock:
-        return any(b.pid == record.get("pid") for b in _browsers.values())
+        return next((b for b in _browsers.values() if b.pid == record.get("pid")), None)
+
+
+def _adopt_record(browser: LaunchedBrowser) -> None:
+    """A crashed owner's record still names the browser this process now uses (attached after the crash):
+    take the record over, or every reaper (this process's included) would kill it as an orphan."""
+    path = _record_path(browser)
+    if path is None or not path.exists():
+        return
+    record = _load_record(path)
+    if record is not None and record.get("start_time") == browser.start_time and not _owner_alive(record):
+        _write_record(browser)
 
 
 def _load_record(path: Path) -> Optional[dict]:
@@ -649,15 +662,15 @@ def _load_record(path: Path) -> Optional[dict]:
     return None
 
 
-def _record_in_use(record: dict) -> bool:
-    if record.get("owner_pid") == os.getpid():
-        return _tracked_here(record)
-    return _owner_alive(record)
-
-
 def _reap_record(path: Path, home: str) -> bool:
     record = _load_record(path)
-    if record is None or _record_in_use(record):
+    if record is None:
+        return False
+    tracked = _tracked_browser(record)
+    if tracked is not None:  # in use here, whoever launched it
+        _adopt_record(tracked)
+        return False
+    if record.get("owner_pid") != os.getpid() and _owner_alive(record):
         return False
     reaped = _is_recorded_browser(record, home)
     if reaped:
