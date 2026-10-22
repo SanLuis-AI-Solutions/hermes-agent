@@ -433,7 +433,8 @@ def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packa
     start_time = _start_time(proc.pid)
     found, err = _wait_for_devtools(proc, udd, time.monotonic() + _launch_timeout(timeout))
     if found is None:
-        _terminate(proc.pid, start_time, proc)
+        if proc.poll() is None:  # one that already exited is reaped by poll(); its pid is no longer ours
+            _terminate(proc.pid, start_time, proc)
         if ephemeral:
             shutil.rmtree(udd, ignore_errors=True)
         return None, err

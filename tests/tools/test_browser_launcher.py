@@ -210,6 +210,20 @@ def test_launch_failure_reports_the_exit_and_leaves_nothing_registered(tmp_path,
     assert launcher.get_browser("broken") is None
 
 
+@pytest.mark.platforms("posix")
+def test_a_browser_that_exited_during_startup_is_not_signalled(tmp_path, caplog, fake_chromium):
+    """A Chromium that died during startup is only reaped: signalling its pid would be refused as recycled
+    and logged as a WARNING that blames the wrong thing."""
+    import logging
+    broken = tmp_path / "exits-at-once"
+    broken.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(21)\n")
+    broken.chmod(0o755)
+    caplog.set_level(logging.WARNING)
+    browser, err = launcher.launch_chromium("dies", executable=str(broken), env=dict(os.environ), timeout=10)
+    assert browser is None and "exited with code 21" in err
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], [r.getMessage() for r in caplog.records]
+
+
 def _write_orphan_record(records: Path, pid: int, udd: str) -> Path:
     dead_owner = subprocess.Popen([sys.executable, "-c", "pass"])
     dead_owner.wait()
