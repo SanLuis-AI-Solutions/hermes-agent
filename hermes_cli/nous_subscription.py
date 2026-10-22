@@ -513,9 +513,10 @@ def apply_nous_managed_defaults(config: dict[str, object], *, enabled_toolsets: 
 
 
 def _get_gateway_direct_credentials() -> dict[str, bool]:
-    """tool_key -> has_direct_credentials. Env-configured keyless local backends (SearXNG)
+    """tool_key -> has_direct_credentials. Env-configured keyless local backends (SearXNG, CAMOFOX_URL)
     count as configured so they are never classified "unconfigured" and pre-checked; Whisper shares
-    the audio key with TTS."""
+    the audio key with TTS. CAMOFOX_URL: the home browses through Camofox (the ``camofox`` plugin
+    since it left core), so the managed browser is offered, not pre-checked over it."""
     fal_direct = fal_key_is_configured()
     audio_direct = bool(resolve_openai_audio_api_key())
     return {
@@ -528,7 +529,7 @@ def _get_gateway_direct_credentials() -> dict[str, bool]:
         "tts": audio_direct or _any_env("ELEVENLABS_API_KEY"),
         "stt": audio_direct or _any_env("GROQ_API_KEY", "MISTRAL_API_KEY"),
         "browser": (
-            _any_env("BROWSER_USE_API_KEY")
+            _any_env("BROWSER_USE_API_KEY", "CAMOFOX_URL")
             or bool(get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID"))
         ),
     }

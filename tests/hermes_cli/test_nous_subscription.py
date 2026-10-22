@@ -325,13 +325,13 @@ def test_prompt_enable_tool_gateway_never_offers_explicit_backend(monkeypatch):
 
 
 def test_gateway_direct_credentials_honor_env_configured_local_backends(monkeypatch):
-    """SEARXNG_URL is an env-configured keyless local backend
-    with no stored selection — it must still count as a direct credential
+    """SEARXNG_URL / CAMOFOX_URL are env-configured keyless local backends
+    with no stored selection — they must still count as direct credentials
     so the tool is offered unchecked, never pre-checked (#92647)."""
     monkeypatch.setattr(
         ns,
         "get_env_value",
-        lambda name: "http://localhost:9377" if name == "SEARXNG_URL" else "",
+        lambda name: "http://localhost:9377" if name in ("SEARXNG_URL", "CAMOFOX_URL") else "",
     )
     monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: None)
@@ -339,6 +339,7 @@ def test_gateway_direct_credentials_honor_env_configured_local_backends(monkeypa
     direct = ns._get_gateway_direct_credentials()
 
     assert direct["web"] is True
+    assert direct["browser"] is True
     assert direct["image_gen"] is False
 
 
