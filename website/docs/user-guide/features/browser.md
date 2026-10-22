@@ -602,7 +602,10 @@ hermes tools disable browser --platform telegram  # one gateway platform
 ## Camofox
 
 Camofox moved to a plugin: `hermes plugins install camofox`. Existing Camofox
-setups are migrated automatically on update.
+setups (`CAMOFOX_URL` set, or `browser.cloud_provider: camofox`) are migrated automatically on
+update: the plugin is installed and the core `browser` toolset is turned off in that profile.
+A `browser.camofox` block with no `CAMOFOX_URL` is not a Camofox setup. A profile that sets up the
+plugin after the update keeps `browser_exec` alongside it.
 
 ## Practical examples
 

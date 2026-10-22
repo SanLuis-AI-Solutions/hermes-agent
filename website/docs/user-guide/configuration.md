@@ -2861,7 +2861,7 @@ toolset with `hermes tools` (or `hermes tools disable browser [--platform NAME]`
 See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
 **Removed keys (migrated automatically).** `browser.backend` is gone — `browser_exec` is the
-only browser path. An old `backend: "off"` is removed on update with a one-time notice to
+only browser path. An old `backend: off` (quoted or not) is removed on update with a one-time notice to
 disable the `browser` toolset instead; any other value is removed silently.
 `snapshot_threshold`, `record_sessions`, `allow_unsafe_evaluate` and `restrict_evaluate`
 belonged to the removed built-in browser tools and no longer have an effect. The
@@ -2870,6 +2870,9 @@ The old `AGENT_BROWSER_*` environment variables are no longer read; on update th
 are copied from the profile's `.env` into the matching keys when those keys are unset
 (`AGENT_BROWSER_EXECUTABLE_PATH` → `executable_path`, `AGENT_BROWSER_PROFILE` → `user_data_dir`,
 `AGENT_BROWSER_ARGS` → `chromium_args`, `AGENT_BROWSER_HEADED` → `headed`, `AGENT_BROWSER_ENGINE` → `engine`).
+`engine: auto` and `headed: false` count as unset, because the environment variable overrode them
+before. A relative `AGENT_BROWSER_PROFILE` was resolved against the working directory, so it is
+written as that absolute path (the working directory at update time).
 
 ## Timezone
 
