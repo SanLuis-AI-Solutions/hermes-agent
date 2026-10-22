@@ -129,6 +129,11 @@ def _resolve_executable() -> Optional[str]:
     return None
 
 
+def _explicit_executable_configured(chromium_executable) -> bool:
+    """An operator-pinned browser binary (even a missing one) is their choice: never download over it."""
+    return chromium_executable(allow_override=True) != chromium_executable(allow_override=False)
+
+
 def _maybe_autoinstall_chromium() -> bool:
     """One-shot ``pm.ensure("chromium")`` (a failed ~170 MB download must not retry per call). Docker
     supplies the binary, Termux has no PM Chromium, and an explicit executable is the user's choice."""
@@ -136,8 +141,9 @@ def _maybe_autoinstall_chromium() -> bool:
     if _autoinstall_attempted:
         return False
     _autoinstall_attempted = True
+    from hermes_cli.browser_runtime import chromium_executable
     from hermes_constants import is_termux
-    if running_in_docker() or is_termux():
+    if running_in_docker() or is_termux() or _explicit_executable_configured(chromium_executable):
         return False
     from pm import InstallError, ensure, lazy_installs_allowed
     if not lazy_installs_allowed():
@@ -259,12 +265,27 @@ def _wait_for_devtools(proc: subprocess.Popen, user_data_dir: str, deadline: flo
 
 
 def _singleton_pid(user_data_dir: str) -> Optional[int]:
+    """Pid of the Chromium holding ``user_data_dir``: the ``SingletonLock`` symlink (POSIX), else (Windows
+    has no symlink, only a locked ``lockfile``) the browser process whose argv names the dir."""
     try:
         target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
     except OSError:
-        return None
+        return _pid_naming_dir(user_data_dir) if os.name == "nt" else None
     pid_text = target.rpartition("-")[2]
     return int(pid_text) if pid_text.isdigit() else None
+
+
+def _pid_naming_dir(user_data_dir: str) -> Optional[int]:
+    """The browser (not a ``--type=`` helper) process whose argv carries ``--user-data-dir=<dir>``."""
+    import psutil
+    for proc in psutil.process_iter(["pid"]):
+        try:
+            argv = proc.cmdline()
+        except (psutil.Error, OSError):
+            continue
+        if not any(tok.startswith("--type=") for tok in argv) and _cmdline_names_dir(proc.pid, user_data_dir):
+            return proc.pid
+    return None
 
 
 def _devtools_endpoint_live(port: int, path: str) -> bool:
@@ -548,8 +569,8 @@ def _is_recorded_browser(record: dict) -> bool:
     if not isinstance(pid, int) or not isinstance(udd, str) or not _pid_alive(pid):
         return False
     expected = record.get("start_time")
-    if expected is not None and _start_time(pid) != expected:
-        return False
+    if expected is None or _start_time(pid) != expected:
+        return False  # no recorded fingerprint, or a recycled pid: never signal on argv alone
     if not _cmdline_names_dir(pid, udd):
         logger.warning("browser: refusing to reap pid %s: its command line does not name %s", pid, udd)
         return False

@@ -195,7 +195,14 @@ def _launch_target(cache_key: str) -> tuple[str, dict[str, Any], bool]:
 
 
 def _create_chromium_session(cache_key: str) -> dict[str, Any]:
-    if browser_in_sandbox():
+    from tools.bot_desktop import placement, runtime
+    try:
+        # Policy first: a refused placement raises, a terminal placement starts its sandbox screen; neither
+        # ever falls back to a host browser.
+        where = runtime.tool_placement()
+    except RuntimeError as exc:
+        raise RuntimeError(f"The browser cannot run here: {exc}") from exc
+    if where == placement.TERMINAL:
         from tools.browser_session_sandbox import create_sandbox_session
         return create_sandbox_session(cache_key)
     from tools.browser_launcher import launch_chromium

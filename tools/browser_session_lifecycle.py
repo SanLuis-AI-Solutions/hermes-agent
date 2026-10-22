@@ -272,7 +272,8 @@ def _force_reap(cache_key: str) -> None:
     stop_cdp_supervisor(cache_key)
     bs = _bs()
     with bs._cleanup_lock:
-        session_info = bs._active_sessions.pop(cache_key, None)
+        session_info = bs._active_sessions.get(cache_key)
+    _forget_session_tracking(cache_key, session=True)  # untracked even if the release below fails
     if session_info:
         release_session_backend(cache_key, session_info)
 
