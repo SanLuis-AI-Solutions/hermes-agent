@@ -129,6 +129,13 @@ def test_cdp_override_does_not_require_pm_browser(browser_store, monkeypatch):
     assert launcher.chromium_ready()[0] is False
 
 
+def _pin_executable(path) -> None:
+    """``browser.executable_path`` in this profile's config.yaml (the operator's browser pin)."""
+    import json
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({"browser": {"executable_path": str(path)}}))
+
+
 def test_historical_warmer_is_inert(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("historical browser warmer must do no work")
@@ -145,7 +152,7 @@ def test_external_chromium_override_survives_pm_composition(browser_store, monke
     publish("chromium")
     override = tmp_path / "user browser"
     override.write_bytes(b"external")
-    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(override))
+    _pin_executable(override)
     assert launcher.chromium_ready() == (True, "")
     assert launcher._resolve_executable() == str(override)
 
@@ -224,7 +231,7 @@ def test_chromium_acquisition_policy(browser_store, monkeypatch, policy, tmp_pat
     if policy == "override":
         override = tmp_path / "external-chrome"
         override.touch()
-        monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(override))
+        _pin_executable(override)
         assert launcher._resolve_executable() == str(override)
         override.unlink()
         assert launcher._resolve_executable() is None

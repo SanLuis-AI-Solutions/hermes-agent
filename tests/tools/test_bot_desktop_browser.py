@@ -309,7 +309,7 @@ def test_headless_override_does_not_hide_pm_headed_browser(tmp_path, monkeypatch
     for exe in (headless, headed):
         exe.write_text("#!/bin/sh\n", encoding="utf-8")
         exe.chmod(0o755)
-    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(headless))
+    _browser_config(monkeypatch, tmp_path / "home", executable_path=str(headless))
     monkeypatch.setattr(pm, "installed_package", lambda name: SimpleNamespace(binary=headed))
     monkeypatch.setattr(browser, "_system_executable", lambda: None)
     monkeypatch.setattr(browser, "_userns_restricted", lambda: False)
