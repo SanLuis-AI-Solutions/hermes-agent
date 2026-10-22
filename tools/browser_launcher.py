@@ -3,8 +3,9 @@
 One browser per launcher key (the session layer's cache key, or ``profile:<dir>`` for a persistent
 profile shared by every key). Chromium picks its own DevTools port (``--remote-debugging-port=0``)
 and writes it to ``<user-data-dir>/DevToolsActivePort``; the CDP URL comes from that file, so there
-is no port race. Every owned launch leaves a host-wide record so a later Hermes process can reap
-the Chromium of an owner that crashed, after proving the pid is still that browser.
+is no port race. Every owned launch leaves a record in its profile's private launcher state dir
+(``<HERMES_HOME>/cache/browser/chromium-records``, 0700) so a later Hermes process serving that profile
+can reap the Chromium of an owner that crashed, after proving the pid is still that browser.
 
 Stop is always parent-first (``ProcessRegistry._terminate_host_pid``): Chromium reaps its own
 zygotes and renderers on SIGTERM, and killing a zygote first turns a clean exit into a crash dump.
@@ -17,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -76,6 +78,9 @@ _procs: dict[str, subprocess.Popen] = {}
 _key_locks: dict[str, threading.Lock] = {}
 _lock = threading.RLock()
 _autoinstall_attempted = False
+# Profile homes (``hermes_home_key``) this process launched or attached a browser for: the reaper reads
+# each one's records, since one process serves many profiles.
+_served_homes: set[str] = set()
 
 
 # ── Host facts ───────────────────────────────────────────────────────────────────────────────────────
@@ -168,9 +173,8 @@ def chromium_ready() -> tuple[bool, str]:
 # ── Launch ───────────────────────────────────────────────────────────────────────────────────────────
 
 def _default_user_data_dir(key: str, home_key: str) -> str:
-    from hermes_constants import get_hermes_home
     digest = hashlib.sha256(f"{home_key}\0{key}".encode()).hexdigest()[:16]
-    return str(Path(get_hermes_home()) / "cache" / "browser" / "chromium" / digest)
+    return str(_ephemeral_root(home_key) / digest)
 
 
 def _launch_timeout(timeout: Optional[float]) -> float:
@@ -334,6 +338,7 @@ def _make_browser(key: str, port: int, path: str, *, pid, start_time, user_data_
 
 def _prepare_dir(user_data_dir: str, ephemeral: bool) -> None:
     if ephemeral:
+        Path(user_data_dir).parent.mkdir(mode=0o700, parents=True, exist_ok=True)  # the private ephemeral root
         shutil.rmtree(user_data_dir, ignore_errors=True)  # fresh profile per launch
     os.makedirs(user_data_dir, mode=0o700, exist_ok=True)
     try:
@@ -378,6 +383,8 @@ def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir
         if existing is not None:
             return existing, None
         home_key = hermes_home_key()
+        with _lock:
+            _served_homes.add(home_key)
         packaged = executable is None
         if packaged:
             ok, hint = chromium_ready()
@@ -515,21 +522,48 @@ def browser_keys() -> list[str]:
         return list(_browsers)
 
 
-# ── Host-wide records + orphan reap ──────────────────────────────────────────────────────────────────
+# ── Per-profile records + orphan reap ────────────────────────────────────────────────────────────────
 
-def _records_dir() -> Path:
-    """Host-wide (every profile, every Hermes process of this user): a crashed owner's Chromium is reaped
-    by whichever Hermes runs next. Socket-safe tmp root, mode 0700."""
-    from hermes_constants import socket_safe_tmpdir
-    uid = os.getuid() if hasattr(os, "getuid") else 0
-    path = Path(socket_safe_tmpdir()) / f"hermes-chromium-{uid}"
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return path
+def _ephemeral_root(home: str) -> Path:
+    """Where ``home``'s throwaway profiles live; the reaper deletes nothing outside it."""
+    return Path(home) / "cache" / "browser" / "chromium"
 
 
-def _record_path(browser: LaunchedBrowser) -> Path:
+def _records_dir(home: str) -> Path:
+    """Per-profile (``home``'s, not the process's): a crashed owner's Chromium is reaped by the next Hermes
+    process serving that profile. Read only after ``_private_dir`` vouches for it."""
+    return Path(home) / "cache" / "browser" / "chromium-records"
+
+
+def _is_private_dir(path: Path) -> bool:
+    """A real directory (not a symlink) owned by this user and closed to group/other writes. Windows has no
+    uid and synthesizes the mode bits, so there only the directory check applies."""
+    try:
+        st = path.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISDIR(st.st_mode):
+        return False
+    return not hasattr(os, "getuid") or (st.st_uid == os.getuid() and not st.st_mode & 0o022)
+
+
+def _private_dir(path: Path) -> Optional[Path]:
+    """``path``, created 0700 when missing; None (logged) when an existing one is not private to this user."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    if _is_private_dir(path):
+        return path
+    logger.debug("browser: not using %s for launcher state: not a private directory of this user", path)
+    return None
+
+
+def _record_path(browser: LaunchedBrowser) -> Optional[Path]:
+    records = _private_dir(_records_dir(browser.home_key))
     digest = hashlib.sha256(browser.user_data_dir.encode()).hexdigest()[:16]
-    return _records_dir() / f"{digest}-{browser.pid}.json"
+    return records / f"{digest}-{browser.pid}.json" if records is not None else None
 
 
 def _write_record(browser: LaunchedBrowser) -> None:
@@ -538,14 +572,18 @@ def _write_record(browser: LaunchedBrowser) -> None:
               "start_time": browser.start_time, "user_data_dir": browser.user_data_dir,
               "home_key": browser.home_key, "ephemeral": browser.ephemeral}
     try:
-        atomic_json_write(_record_path(browser), record, indent=None)
+        path = _record_path(browser)
+        if path is not None:
+            atomic_json_write(path, record, indent=None)
     except OSError as exc:
         logger.debug("browser: could not write launch record for pid %s: %s", browser.pid, exc)
 
 
 def _remove_record(browser: LaunchedBrowser) -> None:
     try:
-        _record_path(browser).unlink(missing_ok=True)
+        path = _record_path(browser)
+        if path is not None:
+            path.unlink(missing_ok=True)
     except OSError as exc:
         logger.debug("browser: could not remove launch record for pid %s: %s", browser.pid, exc)
 
@@ -570,9 +608,20 @@ def _cmdline_names_dir(pid: int, user_data_dir: str) -> bool:
                for tok in argv)
 
 
-def _is_recorded_browser(record: dict) -> bool:
+def _inside_ephemeral_root(user_data_dir: str, home: str) -> bool:
+    try:
+        rel = Path(user_data_dir).resolve().relative_to(_ephemeral_root(home).resolve())
+    except (OSError, ValueError):
+        return False
+    return bool(rel.parts)
+
+
+def _is_recorded_browser(record: dict, home: str) -> bool:
     pid, udd = record.get("pid"), record.get("user_data_dir")
     if not isinstance(pid, int) or not isinstance(udd, str) or not _pid_alive(pid):
+        return False
+    if record.get("ephemeral") and not _inside_ephemeral_root(udd, home):
+        logger.debug("browser: ignoring launch record for pid %s: %s is not a launcher profile dir", pid, udd)
         return False
     expected = record.get("start_time")
     if expected is None or _start_time(pid) != expected:
@@ -588,36 +637,66 @@ def _tracked_here(record: dict) -> bool:
         return any(b.pid == record.get("pid") for b in _browsers.values())
 
 
-def _reap_record(path: Path) -> bool:
+def _load_record(path: Path) -> Optional[dict]:
+    """The record, or None (a corrupt one is removed)."""
     try:
         record = json.loads(path.read_text(encoding="utf-8-sig"))
-        if not isinstance(record, dict):
-            raise ValueError("not a JSON object")
+        if isinstance(record, dict):
+            return record
     except (OSError, ValueError):
-        path.unlink(missing_ok=True)
-        return False
+        pass
+    path.unlink(missing_ok=True)
+    return None
+
+
+def _record_in_use(record: dict) -> bool:
     if record.get("owner_pid") == os.getpid():
-        if _tracked_here(record):
-            return False
-    elif _owner_alive(record):
+        return _tracked_here(record)
+    return _owner_alive(record)
+
+
+def _reap_record(path: Path, home: str) -> bool:
+    record = _load_record(path)
+    if record is None or _record_in_use(record):
         return False
-    reaped = False
-    if _is_recorded_browser(record):
+    reaped = _is_recorded_browser(record, home)
+    if reaped:
         _terminate(record["pid"], record.get("start_time"), None)
         logger.info("browser: reaped orphaned Chromium pid %s (%s)", record["pid"], record["user_data_dir"])
-        reaped = True
-    if reaped and record.get("ephemeral") and isinstance(record.get("user_data_dir"), str):
-        shutil.rmtree(record["user_data_dir"], ignore_errors=True)
+        if record.get("ephemeral"):
+            shutil.rmtree(record["user_data_dir"], ignore_errors=True)
     path.unlink(missing_ok=True)
     return reaped
 
 
-def reap_orphaned_browsers() -> int:
-    """Stop Chromium processes whose owning Hermes process is gone; returns the count. A pid is signalled
-    only after its start time AND its ``--user-data-dir`` argv token match the record."""
-    try:
-        records = sorted(_records_dir().glob("*.json"))
-    except OSError as exc:
-        logger.debug("browser: launch records unavailable: %s", exc)
+def _reap_home(home: str) -> int:
+    records = _records_dir(home)
+    if not os.path.lexists(records):
         return 0
-    return sum(1 for path in records if _reap_record(path))
+    if not _is_private_dir(records):
+        logger.debug("browser: not reaping from %s: not a private directory of this user", records)
+        return 0
+    try:
+        paths = sorted(records.glob("*.json"))
+    except OSError as exc:
+        logger.debug("browser: launch records unavailable in %s: %s", records, exc)
+        return 0
+    return sum(1 for path in paths if _reap_record(path, home))
+
+
+def _served_home_keys(homes) -> set[str]:
+    """The launch profile, every profile this process launched a browser for, and ``homes``."""
+    from hermes_constants import get_process_hermes_home, hermes_home_key
+    with _lock:
+        keys = set(_served_homes)
+    keys.add(hermes_home_key(get_process_hermes_home()))
+    keys.update(hermes_home_key(home) for home in homes)
+    return keys
+
+
+def reap_orphaned_browsers(homes=()) -> int:
+    """Stop Chromium processes whose owning Hermes process is gone, in every profile this process serves
+    (``_served_home_keys``; the janitor and atexit run outside any profile scope, so each home's records
+    are read by path); returns the count. A pid is signalled only after its start time AND its
+    ``--user-data-dir`` argv token match the record."""
+    return sum(_reap_home(home) for home in sorted(_served_home_keys(homes)))

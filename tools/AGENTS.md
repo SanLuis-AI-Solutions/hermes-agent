@@ -85,9 +85,11 @@ hybrid `::local` sidecar > cloud provider (failure → local session marked `fal
 real profile (consented) > Lightpanda > the packaged Chromium from `browser_launcher.launch_chromium`
 (one browser per cache key, `--remote-debugging-port=0` + `DevToolsActivePort`). State lives in
 `browser_session.py`; siblings late-import it inside functions. Every launched Chromium is stopped
-parent-first and recorded host-wide so a later process reaps a crashed owner's browser after checking
-pid + start time + its `--user-data-dir` argv token. `browser_tool.py` and `browser_tool_install.py`
-are frozen old-updater stubs only (see their docstrings); never grow them.
+parent-first and recorded per profile (`<HERMES_HOME>/cache/browser/chromium-records`, a private 0700
+dir) so a later process serving that profile reaps a crashed owner's browser after checking pid + start
+time + its `--user-data-dir` argv token; the reaper walks every home the process serves.
+`browser_tool.py` and `browser_tool_install.py` are frozen old-updater stubs only (see their
+docstrings); never grow them.
 
 ## Backends and providers inside tools/
 

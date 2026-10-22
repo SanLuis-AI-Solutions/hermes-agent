@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import textwrap
@@ -54,13 +55,18 @@ def fake_chromium(tmp_path, monkeypatch):
     script.chmod(0o755)
     monkeypatch.setattr(launcher, "_resolve_executable", lambda: str(script))
     monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: False)
-    records = tmp_path / "records"
-    records.mkdir()
-    monkeypatch.setattr(launcher, "_records_dir", lambda: records)
     monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
     monkeypatch.setattr("tools.browser_session_cloud.is_headed_mode", lambda: False)
     yield script
     launcher.stop_all_browsers()
+
+
+def _records() -> Path:
+    """The test profile's launch records dir (created private, as the launcher creates it)."""
+    from hermes_constants import get_hermes_home
+    path = Path(get_hermes_home()) / "cache" / "browser" / "chromium-records"
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return path
 
 
 def _argv(browser) -> list[str]:
@@ -82,6 +88,23 @@ def test_launch_reads_devtools_port_and_runs_headless_on_an_ephemeral_home_profi
     assert f"--user-data-dir={browser.user_data_dir}" in argv
     assert "--headless=new" in argv
     assert argv[-1] == "about:blank"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # the fake browser's reparented helper is ours to stop
+def test_launch_record_lives_in_the_profiles_private_state_dir(fake_chromium):
+    """Launcher state lives in a private per-profile dir: the record under ``<HERMES_HOME>/cache/browser/
+    chromium-records`` (0700) and the throwaway profile under the 0700 ephemeral root beside it."""
+    from hermes_constants import get_hermes_home
+    browser, err = launcher.launch_chromium("recorded", env=dict(os.environ))
+    assert err is None
+    state = Path(get_hermes_home()) / "cache" / "browser"
+    assert stat.S_IMODE((state / "chromium-records").stat().st_mode) == 0o700
+    assert stat.S_IMODE((state / "chromium").stat().st_mode) == 0o700
+    [record] = (state / "chromium-records").glob("*.json")
+    assert json.loads(record.read_text())["pid"] == browser.pid
+    launcher.stop_browser("recorded")
+    assert not list((state / "chromium-records").glob("*.json"))
 
 
 @pytest.mark.platforms("posix")
@@ -157,7 +180,7 @@ def _write_orphan_record(records: Path, pid: int, udd: str) -> Path:
 def test_orphan_reap_refuses_a_pid_whose_cmdline_lacks_the_recorded_user_data_dir(tmp_path, fake_chromium):
     stranger = subprocess.Popen(["sleep", "3001"])
     try:
-        record = _write_orphan_record(launcher._records_dir(), stranger.pid, str(tmp_path / "some-profile"))
+        record = _write_orphan_record(_records(), stranger.pid, str(tmp_path / "some-profile"))
         assert launcher.reap_orphaned_browsers() == 0
         assert stranger.poll() is None  # never signalled
         assert not record.exists()  # the stale record is dropped
@@ -174,7 +197,7 @@ def test_orphan_reap_stops_a_crashed_owners_browser(tmp_path, fake_chromium):
     deadline = time.monotonic() + 10
     while not (udd / "DevToolsActivePort").exists() and time.monotonic() < deadline:
         time.sleep(0.05)
-    _write_orphan_record(launcher._records_dir(), proc.pid, str(udd))
+    _write_orphan_record(_records(), proc.pid, str(udd))
     assert launcher.reap_orphaned_browsers() == 1
     proc.wait(timeout=10)
 
@@ -185,7 +208,7 @@ def test_records_of_a_live_owner_are_left_alone(tmp_path, fake_chromium):
     launcher.launch_chromium("mine", env=dict(os.environ))
     assert launcher.reap_orphaned_browsers() == 0
     assert launcher.get_browser("mine") is not None
-    assert list(launcher._records_dir().glob("*.json"))
+    assert list(_records().glob("*.json"))
 
 
 @pytest.mark.parametrize("headed,display,expect_headless", [

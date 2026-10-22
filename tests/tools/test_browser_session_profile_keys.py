@@ -35,7 +35,7 @@ def two_profiles(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: False)
     records = tmp_path / "records"
     records.mkdir()
-    monkeypatch.setattr(launcher, "_records_dir", lambda: records)
+    monkeypatch.setattr(launcher, "_records_dir", lambda _home: records)
     homes = {}
     for name in ("a", "b"):
         home = tmp_path / f"home-{name}"

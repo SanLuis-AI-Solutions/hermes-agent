@@ -243,15 +243,20 @@ def emergency_cleanup_all_sessions() -> None:
 
 
 def reap_orphaned_browser_sessions() -> int:
-    """Stop Chromium / ``lightpanda serve`` processes whose owning Hermes process is gone."""
+    """Stop Chromium / ``lightpanda serve`` processes whose owning Hermes process is gone (Chromium: in every
+    profile this process serves, incl. each live session's owning home)."""
     from tools.browser_launcher import reap_orphaned_browsers
     from tools.browser_lightpanda import reap_orphaned_lightpanda
+    bs = _bs()
+    with bs._cleanup_lock:
+        session_homes = list(bs._session_owner_homes.values())
     reaped = 0
-    for reap in (reap_orphaned_lightpanda, reap_orphaned_browsers):
+    for name, reap in (("lightpanda", reap_orphaned_lightpanda),
+                       ("chromium", lambda: reap_orphaned_browsers(session_homes))):
         try:
             reaped += reap()
         except OSError as exc:
-            logger.debug("orphan reap (%s) failed: %s", reap.__name__, exc)
+            logger.debug("orphan reap (%s) failed: %s", name, exc)
     if reaped:
         logger.info("Reaped %d orphaned browser process(es) from previous run(s)", reaped)
     return reaped

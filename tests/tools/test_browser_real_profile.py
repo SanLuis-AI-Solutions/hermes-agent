@@ -248,7 +248,7 @@ class TestRealProfileCdpLaunch:
         (copy_dir / "Default" / "Cookies").write_text("copied-cookies", encoding="utf-8")
         records = tmp_path / "records"
         records.mkdir()
-        monkeypatch.setattr(launcher, "_records_dir", lambda: records)
+        monkeypatch.setattr(launcher, "_records_dir", lambda _home: records)
         monkeypatch.setattr(launcher, "_start_time", lambda pid: None)
         monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
         monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: True)

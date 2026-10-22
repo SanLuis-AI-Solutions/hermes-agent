@@ -1,10 +1,13 @@
 """Tests for the browser orphan reaper: Chromium launched by a Hermes process that exited without
-cleaning up is found through the launcher's host-wide records and stopped, but only after its
+cleaning up is found through the launcher's per-profile records and stopped, but only after its
 identity is proven (``tools.browser_launcher.reap_orphaned_browsers``, driven by
 ``browser_session_lifecycle.reap_orphaned_browser_sessions``)."""
 
 import json
 import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,16 +23,20 @@ _LIVE_OTHER_OWNER = 88888
 
 
 @pytest.fixture
-def records(tmp_path, monkeypatch):
-    """Host-wide launch records in a temp dir; no real process is ever probed or signalled."""
-    path = tmp_path / "records"
-    path.mkdir()
-    monkeypatch.setattr(launcher, "_records_dir", lambda: path)
+def records(monkeypatch):
+    """The test profile's launch records dir; nothing is ever signalled (``_terminate`` only records)."""
+    from hermes_constants import get_hermes_home
+    home = Path(get_hermes_home())
+    path = home / "cache" / "browser" / "chromium-records"
+    path.mkdir(mode=0o700, parents=True)
+    monkeypatch.setattr(launcher, "_records_dir", lambda *_home: path)  # this profile's dir, from any caller
+    monkeypatch.setattr(launcher, "_served_homes", set(), raising=False)
     monkeypatch.setattr(launcher, "_browsers", {})
     monkeypatch.setattr(launcher, "_procs", {})
     terminated = []
     monkeypatch.setattr(launcher, "_terminate", lambda pid, start_time, proc: terminated.append(pid))
-    return SimpleNamespace(dir=path, terminated=terminated)
+    return SimpleNamespace(dir=path, terminated=terminated,
+                           ephemeral=lambda name: str(home / "cache" / "browser" / "chromium" / name))
 
 
 def _record(records, *, pid: int, udd: str, owner_pid: int = _DEAD_OWNER, start_time=777,
@@ -75,7 +82,7 @@ class TestReapOrphanedBrowserSessions:
         A PID whose identity cannot be pinned could be recycled between the verify and the
         tree-kill, so it must be left alone.
         """
-        _record(records, pid=12345, udd=str(tmp_path / "p"), start_time=None)
+        _record(records, pid=12345, udd=records.ephemeral("p"), start_time=None)
         monkeypatch.setattr(launcher, "_pid_alive", _alive(12345))
         monkeypatch.setattr(launcher, "_start_time", lambda pid: None)
         monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
@@ -107,7 +114,7 @@ class TestOwnerPidCrossProcess:
         This is the core cross-process safety check: Process B scanning while Process A is using a
         browser must not kill A's browser.
         """
-        rec = _record(records, pid=12345, udd=str(tmp_path / "p"), owner_pid=_LIVE_OTHER_OWNER)
+        rec = _record(records, pid=12345, udd=records.ephemeral("p"), owner_pid=_LIVE_OTHER_OWNER)
         monkeypatch.setattr(launcher, "_pid_alive", _alive(12345, _LIVE_OTHER_OWNER))
         monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
         monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
@@ -171,7 +178,7 @@ class TestLeakedBrowserOfThisProcess:
     this process still tracks is never reaped, however old."""
 
     def test_untracked_own_browser_is_reaped(self, records, tmp_path, monkeypatch):
-        rec = _record(records, pid=12345, udd=str(tmp_path / "p"), owner_pid=os.getpid())
+        rec = _record(records, pid=12345, udd=records.ephemeral("p"), owner_pid=os.getpid())
         monkeypatch.setattr(launcher, "_pid_alive", _alive(12345, os.getpid()))
         monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
         monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
@@ -181,7 +188,7 @@ class TestLeakedBrowserOfThisProcess:
         assert not rec.exists()
 
     def test_tracked_own_browser_is_spared(self, records, tmp_path, monkeypatch):
-        udd = str(tmp_path / "p")
+        udd = records.ephemeral("p")
         rec = _record(records, pid=12345, udd=udd, owner_pid=os.getpid())
         launcher._browsers["mine"] = launcher.LaunchedBrowser(
             key="mine", pid=12345, start_time=777, cdp_url="ws://127.0.0.1:1/devtools/browser/x",
@@ -196,13 +203,94 @@ class TestLeakedBrowserOfThisProcess:
 
     def test_identity_guard_still_gates_the_leak_path(self, records, tmp_path, monkeypatch):
         """The leak path must not bypass the argv identity check."""
-        _record(records, pid=12345, udd=str(tmp_path / "p"), owner_pid=os.getpid())
+        _record(records, pid=12345, udd=records.ephemeral("p"), owner_pid=os.getpid())
         monkeypatch.setattr(launcher, "_pid_alive", _alive(12345, os.getpid()))
         monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
         monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: False)
 
         assert launcher.reap_orphaned_browsers() == 0
         assert records.terminated == []
+
+
+class TestPrivatePerProfileRecords:
+    """Launcher state lives in a private per-profile dir: a records dir that is not a real directory of this
+    user closed to other writers is never read, and the reaper deletes nothing outside the profile's
+    ephemeral root (``<HERMES_HOME>/cache/browser/chromium/``)."""
+
+    @staticmethod
+    def _orphan(records, monkeypatch, pid=12345):
+        rec = _record(records, pid=pid, udd=records.ephemeral("p"))
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(pid))
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+        monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+        return rec
+
+    @pytest.mark.platforms("posix")
+    def test_records_dir_writable_by_others_is_not_read(self, records, monkeypatch):
+        rec = self._orphan(records, monkeypatch)
+        records.dir.chmod(0o777)
+
+        assert launcher.reap_orphaned_browsers() == 0
+        assert records.terminated == [] and rec.exists()
+
+    @pytest.mark.platforms("posix")
+    def test_symlinked_records_dir_is_not_read(self, records, tmp_path, monkeypatch):
+        real = tmp_path / "elsewhere"
+        records.dir.rename(real)
+        records.dir.symlink_to(real, target_is_directory=True)
+        rec = self._orphan(records, monkeypatch)
+
+        assert launcher.reap_orphaned_browsers() == 0
+        assert records.terminated == [] and rec.exists()
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.live_system_guard_bypass  # the stand-in process is our own child
+    def test_ephemeral_record_outside_the_ephemeral_root_is_neither_signalled_nor_deleted(self, records, tmp_path):
+        """A live process carrying the recorded ``--user-data-dir=`` token with a matching start time: still
+        refused when the "ephemeral" dir is not one the launcher creates."""
+        outside = tmp_path / "not-a-launcher-profile"
+        (outside / "Default").mkdir(parents=True)
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"--user-data-dir={outside}"])
+        try:
+            deadline = time.monotonic() + 10
+            while launcher._start_time(proc.pid) is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            _record(records, pid=proc.pid, udd=str(outside), start_time=launcher._start_time(proc.pid))
+
+            assert launcher.reap_orphaned_browsers() == 0
+            assert records.terminated == []
+            assert (outside / "Default").is_dir()
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
+
+
+@pytest.mark.platforms("posix")
+def test_records_of_every_served_profile_are_reaped(tmp_path, monkeypatch):
+    """One process serves many profiles; the janitor/atexit reap runs outside any profile scope. Each served
+    home's records are read by path: the launch profile's and a live session's owning profile's."""
+    from hermes_constants import get_hermes_home
+    home_a, home_b = Path(get_hermes_home()), tmp_path / "profile-b"
+    monkeypatch.setattr(launcher, "_browsers", {})
+    monkeypatch.setattr(launcher, "_served_homes", set(), raising=False)
+    terminated = []
+    monkeypatch.setattr(launcher, "_terminate", lambda pid, start_time, proc: terminated.append(pid))
+    monkeypatch.setattr(launcher, "_pid_alive", _alive(1111, 2222))
+    monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
+    monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
+    monkeypatch.setattr("tools.browser_lightpanda.reap_orphaned_lightpanda", lambda: 0)
+    for home, pid in ((home_a, 1111), (home_b, 2222)):
+        rec_dir = home / "cache" / "browser" / "chromium-records"
+        rec_dir.mkdir(mode=0o700, parents=True)
+        udd = home / "cache" / "browser" / "chromium" / f"orphan-{pid}"
+        udd.mkdir(parents=True)
+        _record(SimpleNamespace(dir=rec_dir), pid=pid, udd=str(udd))
+    monkeypatch.setitem(bs._session_owner_homes, "task-on-b", str(home_b))
+
+    assert lifecycle.reap_orphaned_browser_sessions() == 2
+    assert sorted(terminated) == [1111, 2222]
+    assert not (home_b / "cache" / "browser" / "chromium" / "orphan-2222").exists()
 
 
 class TestPeriodicOrphanReap:

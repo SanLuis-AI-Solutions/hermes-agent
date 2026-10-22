@@ -175,7 +175,7 @@ def test_exact_pm_child_receives_composed_scrubbed_environment(browser_store, mo
     chromium = publish("chromium", _FAKE_PM_CHROMIUM.format(python=sys.executable))
     records = tmp_path / "records"
     records.mkdir()
-    monkeypatch.setattr(launcher, "_records_dir", lambda: records)
+    monkeypatch.setattr(launcher, "_records_dir", lambda _home: records)
     monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: False)
     monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
     monkeypatch.setattr("tools.browser_session_cloud.is_headed_mode", lambda: False)
