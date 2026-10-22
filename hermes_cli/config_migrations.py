@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import functools
 import logging
+import os
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -755,7 +756,22 @@ def _browser_value_from_env(key: str, value: str) -> Any:
         return value.lower() if value.lower() in ("auto", "lightpanda", "chrome") else None
     if key == "executable_path" and _inside_pm_store(value):
         return None
+    if key == "user_data_dir" and not os.path.isabs(os.path.expanduser(value)):
+        # agent-browser inherited Hermes's cwd and resolved a relative profile there; browser.user_data_dir
+        # anchors relative paths at HERMES_HOME, so pin the directory the logins are in now.
+        return os.path.abspath(os.path.expanduser(value))
     return value
+
+
+def _config_decided(key: str, current: Any) -> bool:
+    """``browser.<key>`` already won over its AGENT_BROWSER_* var, as core resolved them: ``engine: auto``
+    deferred to AGENT_BROWSER_ENGINE and ``headed`` was config OR env, so those defaults (core's `hermes
+    tools` Local Browser row wrote ``engine: auto``; old saves materialised both) do not block the move."""
+    if key == "engine":
+        return str(current or "").strip().lower() not in ("", "auto")
+    if key == "headed":
+        return current is not None and str(current).strip().lower() in ("true", "1", "yes")
+    return current not in (None, "", [])
 
 
 def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
@@ -763,7 +779,7 @@ def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     # browser. `browser.backend` chose between the two, so it is dropped (an `off`, the opt-out of
     # browser_exec, gets a notice saying how to turn browsing off now). The AGENT_BROWSER_* settings
     # this home's .env gave agent-browser move to the browser.* keys the launcher reads, never over
-    # a value already set. .env itself is left alone. Camofox left core in the same release: a home
+    # a value that already won over them (:func:`_config_decided`). .env itself is left alone. Camofox left core in the same release: a home
     # running it is recorded now, from its pre-v52 files, so its left-core row converts it later
     # while a newer home that installs the camofox plugin itself keeps browser_exec.
     from pathlib import Path
@@ -776,7 +792,8 @@ def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     added, messages = [], []
     if "backend" in browser:
         backend = browser.pop("backend")
-        if isinstance(backend, str) and backend.strip().lower() == "off":
+        # YAML 1.1 reads an unquoted `off` as False; core treated that as off too.
+        if backend is False or (isinstance(backend, str) and backend.strip().lower() == "off"):
             # config_added is what `hermes update` re-surfaces on its quiet path, so the notice rides in it.
             note = ("removed browser.backend: off — the built-in browser tools are gone and browser_exec is the "
                     "browser now; to turn browsing off, disable the `browser` toolset in `hermes tools`")
@@ -787,7 +804,7 @@ def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     moved = []
     for name, value in _agent_browser_env(Path(get_hermes_home())).items():
         key = dict(_AGENT_BROWSER_ENV_KEYS)[name]
-        if browser.get(key) not in (None, "", []):
+        if _config_decided(key, browser.get(key)):
             continue
         new = _browser_value_from_env(key, value)
         if new is not None:

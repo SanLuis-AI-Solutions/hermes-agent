@@ -1,7 +1,8 @@
 """Config v52: agent-browser and the built-in browser tools left Hermes.
 
 browser.backend is dropped (``off`` gets a one-time notice); AGENT_BROWSER_* from a profile's own
-.env (plus the process env for the launch home only) moves to browser.* keys that are still unset.
+.env (plus the process env for the launch home only) moves to browser.* keys that are unset or hold the
+default core let the env override.
 """
 
 import hermes_yaml as yaml
@@ -100,6 +101,44 @@ def test_dotenv_settings_move_to_unset_keys_only(tmp_path, monkeypatch):
     assert any("AGENT_BROWSER_ARGS → browser.chromium_args" in item for item in results["config_added"])
     # .env is left as it was.
     assert (home / ".env").read_text(encoding="utf-8") == env
+
+
+def test_env_wins_over_the_defaults_core_wrote(tmp_path, monkeypatch):
+    """Core resolved ``engine: auto`` to AGENT_BROWSER_ENGINE and ``headed`` as config OR env, and its
+    `hermes tools` Local Browser row wrote ``engine: auto``: those values do not block the move. A
+    non-default engine won on core and stays."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    env = "AGENT_BROWSER_ENGINE=lightpanda\nAGENT_BROWSER_HEADED=true\n"
+    defaults = _home(tmp_path / "a", {"_config_version": 51, "browser": {"engine": "auto", "headed": False}}, env)
+    chosen = _home(tmp_path / "b", {"_config_version": 51, "browser": {"engine": "chrome", "headed": "false"}}, env)
+    _migrate(defaults, quiet=True)
+    _migrate(chosen, quiet=True)
+    assert _raw(defaults)["browser"] == {"engine": "lightpanda", "headed": True}
+    assert _raw(chosen)["browser"] == {"engine": "chrome", "headed": True}
+
+
+def test_unquoted_backend_off_gets_the_notice(tmp_path, monkeypatch, capsys):
+    """YAML 1.1 reads an unquoted ``backend: off`` as False; core treated it as off."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    home = tmp_path / "a"
+    home.mkdir()
+    (home / "config.yaml").write_text("_config_version: 51\nbrowser:\n  backend: off\n", encoding="utf-8")
+    results = _migrate(home)
+    assert "backend" not in (_raw(home).get("browser") or {})
+    assert "browser_exec is the browser now" in capsys.readouterr().out
+    assert any("browser.backend: off" in note for note in results["config_added"])
+
+
+def test_relative_profile_keeps_the_directory_core_used(tmp_path, monkeypatch):
+    """agent-browser resolved a relative AGENT_BROWSER_PROFILE against Hermes's cwd; browser.user_data_dir
+    anchors relative paths at HERMES_HOME, so the migration pins the absolute directory."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    home = _home(tmp_path / "a", {"_config_version": 51}, "AGENT_BROWSER_PROFILE=prof/rel\n")
+    _migrate(home, quiet=True)
+    assert _raw(home)["browser"]["user_data_dir"] == str(cwd / "prof" / "rel")
 
 
 def test_falsy_headed_and_unknown_engine_carry_nothing(tmp_path, monkeypatch):
