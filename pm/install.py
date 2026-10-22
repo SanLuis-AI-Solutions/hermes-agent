@@ -69,7 +69,7 @@ def _store() -> Store:
 
 
 def _heal_exec_bit(binary: Path) -> bool:
-    """agent-browser entries staged before stage() set the exec bit sit at 0644 and fail every
+    """Store entries staged from archives that drop the exec bit sit at 0644 and fail every
     launch with PermissionError. Modes are not part of the pinned digest, so restore it in place;
     an entry we cannot chmod (sealed store) is treated as not installed."""
     if os.name == "nt" or os.access(binary, os.X_OK):

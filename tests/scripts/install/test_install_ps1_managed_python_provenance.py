@@ -83,7 +83,7 @@ exit $LASTEXITCODE
     ]
     if stage == "python-deps":
         assert json.loads(pm_log.read_text(encoding="utf-8-sig")) == (
-            ["install", "--without", "agent-browser"] if skip_browser else ["install"])
+            ["install", "--without", "chromium"] if skip_browser else ["install"])
     else:
         assert not pm_log.exists()
     assert existing.read_text(encoding="utf-8-sig") == "previous generation"

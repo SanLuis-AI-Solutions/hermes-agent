@@ -33,8 +33,8 @@ def test_missing_value_fails_before_any_install_work(option: str, suffix: list[s
 
 @pytest.mark.parametrize("flags, expected", [
     ([], ["-m", "pm.cli", "install"]),
-    (["--skip-browser"], ["-m", "pm.cli", "install", "--without", "agent-browser"]),
-    (["--no-playwright"], ["-m", "pm.cli", "install", "--without", "agent-browser"]),
+    (["--skip-browser"], ["-m", "pm.cli", "install", "--without", "chromium"]),
+    (["--no-playwright"], ["-m", "pm.cli", "install", "--without", "chromium"]),
 ])
 def test_browser_skip_becomes_the_pm_opt_out(tmp_path: Path, flags: list[str], expected: list[str]) -> None:
     """The skip flag is PM's persisted opt-out, not a no-op and not --non-interactive."""
