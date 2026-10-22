@@ -294,7 +294,10 @@ def _create_session_for_key(cache_key: str, force_local: bool) -> dict[str, Any]
 
 def _backend_dead(session_info: dict[str, Any]) -> bool:
     """True when a local session's process is gone (Chromium crashed or was killed, ``lightpanda serve``
-    exited): the next call builds a fresh one instead of handing out a dead endpoint."""
+    exited): the next call builds a fresh one instead of handing out a dead endpoint.
+
+    A launcher key is shared by every cache key on one persistent profile, so a live browser on the key is
+    not enough: when another key relaunched it after a crash, this record still names the dead endpoint."""
     features = session_info.get("features") or {}
     if features.get("lightpanda"):
         from tools.browser_lightpanda import get_server
@@ -304,7 +307,8 @@ def _backend_dead(session_info: dict[str, Any]) -> bool:
         "hermes-real-profile" if features.get("real_profile") else None)
     if launcher_key:
         from tools.browser_launcher import get_browser
-        return get_browser(launcher_key) is None
+        browser = get_browser(launcher_key)
+        return browser is None or browser.cdp_url != session_info.get("cdp_url")
     return False
 
 

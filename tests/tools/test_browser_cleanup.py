@@ -1,8 +1,12 @@
 """Regression tests for browser session cleanup (tools/browser_session_lifecycle.py)."""
 
+import os
 import sys
 from unittest.mock import patch
 
+import pytest
+
+from tools import browser_launcher as launcher
 from tools import browser_session as bs
 from tools import browser_session_lifecycle as lifecycle
 
@@ -174,3 +178,42 @@ class TestAtexitLifecycleUnimportable:
         the lifecycle module raises; the hook must stay silent (#112437)."""
         monkeypatch.setitem(sys.modules, "tools.browser_session_lifecycle", None)  # import -> ImportError
         bs._atexit_cleanup()  # must not raise
+
+
+@pytest.fixture
+def isolated_sessions(monkeypatch):
+    """Empty session + launcher registries, no janitor thread."""
+    for name in ("_active_sessions", "_session_last_activity", "_session_owner_homes", "_cleanup_failures"):
+        monkeypatch.setattr(bs, name, {})
+    monkeypatch.setattr(launcher, "_browsers", {})
+    monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
+    return bs._active_sessions
+
+
+def _attached_browser(key: str, cdp_url: str) -> launcher.LaunchedBrowser:
+    return launcher.LaunchedBrowser(key=key, pid=os.getpid(), start_time=None, cdp_url=cdp_url,
+                                    http_url="http://127.0.0.1:1", user_data_dir="/shared", owned=False,
+                                    ephemeral=False, home_key="h")
+
+
+class TestSharedBrowserSessions:
+    """Several cache keys share one browser (Bot Desktop profile, browser.user_data_dir, real profile)."""
+
+    def test_a_key_left_on_a_relaunched_shared_browser_rebuilds_on_the_live_endpoint(self, monkeypatch,
+                                                                                    isolated_sessions):
+        key = "profile:/shared"
+        dead, live = "ws://127.0.0.1:9301/devtools/browser/dead", "ws://127.0.0.1:9302/devtools/browser/live"
+        # The browser died and key 'b' already relaunched it: the launcher key is alive again, on a new endpoint.
+        launcher._browsers[key] = _attached_browser(key, live)
+        isolated_sessions.update({
+            "a": {"session_name": "h_a", "cdp_url": dead, "launcher_key": key, "features": {"local": True}},
+            "b": {"session_name": "h_b", "cdp_url": live, "launcher_key": key, "features": {"local": True}},
+        })
+
+        def build_from_launcher(cache_key, force_local):
+            browser = launcher.get_browser(key)
+            return {**bs._session_record("h", browser.cdp_url, {"local": True}), "launcher_key": key}
+        monkeypatch.setattr(bs, "_create_session_for_key", build_from_launcher)
+
+        assert bs.get_session_info("a")["cdp_url"] == live
+        assert launcher.get_browser(key) is not None, "b's live browser must survive a's rebuild"
