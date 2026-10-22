@@ -525,11 +525,6 @@ def stop_all_browsers(home_key: Optional[str] = None) -> None:
         stop_browser(key)
 
 
-def browser_keys() -> list[str]:
-    with _lock:
-        return list(_browsers)
-
-
 # ── Per-profile records + orphan reap ────────────────────────────────────────────────────────────────
 
 def _ephemeral_root(home: str) -> Path:
