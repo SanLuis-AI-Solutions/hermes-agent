@@ -477,7 +477,7 @@ def _copy_auth_file(src_file: str, dst_file: str, *, deadline_s: float | None = 
 
 
 def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> dict[str, str]:
-    """Mirror ``source_profile``'s auth files into the copy's ``Default`` (agent-browser opens it);
+    """Mirror ``source_profile``'s auth files into the copy's ``Default`` (the launched browser opens it);
     returns ``{relative name: reason}`` for the session-cookie DBs that could NOT be copied ({} =
     the signed-in state is usable). Locked password/autofill DBs are logged and skipped."""
     failed: dict[str, str] = {}
