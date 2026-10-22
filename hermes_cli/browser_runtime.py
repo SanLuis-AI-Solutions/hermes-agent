@@ -76,6 +76,9 @@ def chromium_missing_hint() -> str:
     """One actionable line for "no Chromium" on this machine. Never suggests npm."""
     from hermes_platform.host.runtime import is_termux
 
+    if pinned := _configured_executable():  # the pin wins over every other source, so name it
+        return (f"browser.executable_path is set to {pinned}, which is not a browser on this machine: fix the "
+                "path, or clear it to use Hermes's Chromium.")
     if is_termux():
         return ("No Chromium found: pm builds none for Termux. Install one with "
                 "`pkg install x11-repo && pkg install chromium`, or set browser.executable_path.")

@@ -136,6 +136,18 @@ def _pin_executable(path) -> None:
     (get_hermes_home() / "config.yaml").write_text(json.dumps({"browser": {"executable_path": str(path)}}))
 
 
+def test_a_missing_pinned_browser_is_named_in_the_hint(browser_store, tmp_path):
+    """The pin wins over pm's Chromium, so "install chromium" cannot help: the hint names the pinned path."""
+    _, _, publish = browser_store
+    publish("chromium")
+    missing = tmp_path / "moved away" / "chrome"
+    _pin_executable(missing)
+    ok, hint = launcher.chromium_ready()
+    assert ok is False
+    assert "browser.executable_path" in hint and str(missing) in hint
+    assert "hermes pm install chromium" not in hint
+
+
 def test_historical_warmer_is_inert(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("historical browser warmer must do no work")
