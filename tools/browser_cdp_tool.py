@@ -154,22 +154,36 @@ _METHOD_PARAM_GUARDS = {
 }
 
 
+# _current_page_private_url's verdict when the target list cannot be read: refuse, never assume public.
+_PAGE_URL_UNVERIFIED = "<unverified>"
+# Browser-internal pages carry no web origin a worker or browser-level call could borrow, so an open new tab
+# must not lock every target-less call (url_blocked rejects their schemes as unsupported).
+_ORIGINLESS_PAGE_PREFIXES = ("about:", "chrome:", "chrome-untrusted:", "chrome-search:", "devtools:", "edge:", "brave:")
+
+
 def _current_page_private_url(endpoint: str, target_id: Optional[str]) -> Optional[str]:
-    """URL of the page this call acts on (``target_id``'s, else the first page target) when it targets a
-    private/internal address, else None. Read from ``Target.getTargets`` on the same endpoint; fail-open on
-    probe failure, like the other page guards."""
+    """The private/internal URL a non-allow-listed call would reach (or ``_PAGE_URL_UNVERIFIED``), else None.
+
+    Fail-closed, read from ``Target.getTargets`` on the same endpoint. Only a ``page`` target whose own URL
+    is known passes on that URL alone. A browser-level call (no target) or a worker / iframe / unknown
+    target runs with some page's origin (a SharedWorker's ``fetch('/')`` reads its private page;
+    ``Storage.*`` spans every origin), so it is refused while ANY page target is private."""
     from tools.browser_url_policy import url_blocked
     if not endpoint or not _WS_AVAILABLE:
-        return None
+        return _PAGE_URL_UNVERIFIED
     try:
         infos = _run_async(_cdp_call(endpoint, "Target.getTargets", {}, None, 5.0)).get("targetInfos") or []
-    except (TimeoutError, RuntimeError, OSError, WebSocketException) as exc:
+    except (TimeoutError, RuntimeError, OSError, ValueError, WebSocketException) as exc:
         logger.debug("browser_cdp: page-URL probe failed: %s", exc)
+        return _PAGE_URL_UNVERIFIED
+    acted = next((t for t in infos if t.get("targetId") == target_id), None) if target_id else None
+    url = str((acted or {}).get("url") or "")
+    if url and url_blocked(url):
+        return url
+    if url and acted.get("type") == "page":
         return None
-    pages = [t for t in infos if t.get("type") == "page"]
-    page = next((t for t in pages if t.get("targetId") == target_id), None) if target_id else (pages[:1] or [None])[0]
-    url = str((page or {}).get("url") or "")
-    return url if url and url_blocked(url) else None
+    page_urls = (str(t.get("url") or "") for t in infos if t.get("type") == "page")
+    return next((u for u in page_urls if u and not u.startswith(_ORIGINLESS_PAGE_PREFIXES) and url_blocked(u)), None)
 
 
 def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint: str = "",
@@ -177,7 +191,7 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
     """Apply the browser SSRF/private-page guard to raw CDP calls.
 
     Raw CDP shares the cloud/private-network boundary of ``browser_exec``'s URL policy and must not become
-    its bypass. Probes are best-effort; a probe failure never breaks local/custom CDP workflows.
+    its bypass, so a page whose URL cannot be verified as public refuses page-reading methods.
     """
     from tools.browser_url_policy import eval_ssrf_guard_active
     if not eval_ssrf_guard_active():
@@ -190,6 +204,9 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
             return _blocked(template.format(literal), method)
     if method not in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
         blocked_url = _current_page_private_url(endpoint, target_id)
+        if blocked_url == _PAGE_URL_UNVERIFIED:
+            return _blocked(f"Blocked: could not read the browser's targets to verify that raw CDP method "
+                            f"{method!r} cannot reach a private or internal page.", method)
         if blocked_url:
             return _blocked(f"Blocked: page URL targets a private or internal address ({blocked_url}). "
                             f"Raw CDP method {method!r} could expose private page content or state.", method)
@@ -298,7 +315,8 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
     effective_task_id = task_id or "default"
 
     if frame_id:
-        blocked = _browser_cdp_private_guard(method=method, params=params or {},
+        # An OOPIF's frame id is its iframe target id, so the guard judges that frame (or fails closed).
+        blocked = _browser_cdp_private_guard(method=method, params=params or {}, target_id=frame_id,
                                              endpoint=_resolve_cdp_endpoint() if _WS_AVAILABLE else "")
         if blocked:
             return blocked

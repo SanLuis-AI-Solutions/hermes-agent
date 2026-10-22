@@ -595,6 +595,71 @@ def test_page_url_probe_reads_the_target_over_the_same_endpoint(monkeypatch, cdp
         assert len(evaluated) == 1
 
 
+PUBLIC_PAGE = "https://93.184.216.34/"
+
+
+@pytest.mark.parametrize(("target_id", "page_url", "blocked"), [
+    ("worker-1", PRIVATE_URL, True),      # SharedWorker of a private page: fetch('/') reads that page
+    ("bogus-id", PRIVATE_URL, True),      # unknown target: cannot prove it is not the private page
+    (None, PRIVATE_URL, True),            # browser-level call spans every page
+    ("worker-1", PUBLIC_PAGE, False),     # every page public: the worker runs
+])
+def test_non_page_target_fails_closed_while_any_page_is_private(monkeypatch, cdp_server, target_id, page_url,
+                                                                 blocked):
+    """A non-page / unknown target carries some page's origin, so page-reading CDP refuses it while any page
+    target is private, and runs it when every page is public."""
+    cdp_server.on("Target.getTargets", lambda params, sid: {"targetInfos": [
+        {"targetId": "tab-public", "type": "page", "url": PUBLIC_PAGE},
+        {"targetId": "tab-2", "type": "page", "url": page_url},
+        {"targetId": "newtab", "type": "page", "url": "chrome://newtab/"},
+        {"targetId": "worker-1", "type": "shared_worker", "url": ""},
+    ]})
+    cdp_server.on("Target.attachToTarget", lambda params, sid: {"sessionId": "s-1"})
+    cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "page body"}})
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Runtime.evaluate", params={"expression": "fetch('/').then(r => r.text())"}, target_id=target_id))
+
+    evaluated = [m for m in cdp_server.received() if m.get("method") == "Runtime.evaluate"]
+    if blocked:
+        assert PRIVATE_URL in result["error"] and evaluated == []
+    else:
+        assert result["success"] is True and len(evaluated) == 1
+
+
+def test_frame_id_is_judged_by_its_own_target_not_the_first_page(monkeypatch, cdp_server):
+    """frame_id routing checks the OOPIF's own target (frame id == iframe target id) and fails closed on a
+    private page, even when the first page target is public."""
+    supervisor_calls = []
+    cdp_server.on("Target.getTargets", lambda params, sid: {"targetInfos": [
+        {"targetId": "tab-public", "type": "page", "url": PUBLIC_PAGE},
+        {"targetId": "tab-private", "type": "page", "url": PRIVATE_URL},
+        {"targetId": "frame-1", "type": "iframe", "url": "https://93.184.216.35/embed"},
+    ]})
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_via_supervisor",
+                        lambda **kw: supervisor_calls.append(kw) or json.dumps({"success": True}))
+
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Runtime.evaluate", params={"expression": "document.title"}, frame_id="frame-1"))
+
+    assert PRIVATE_URL in result["error"] and supervisor_calls == []
+
+
+def test_unreadable_target_list_fails_closed(monkeypatch, cdp_server):
+    """When the page URLs cannot be read the guard refuses instead of assuming the page is public."""
+    cdp_server.on("Target.getTargets", lambda params, sid: RuntimeError("Target domain unavailable"))
+    cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "page body"}})
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Runtime.evaluate", params={"expression": "document.title"}))
+
+    assert "could not read the browser's targets" in result["error"]
+    assert not [m for m in cdp_server.received() if m.get("method") == "Runtime.evaluate"]
+
+
 def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
     cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "ok"}})
 
