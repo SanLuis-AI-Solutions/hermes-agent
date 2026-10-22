@@ -120,6 +120,26 @@ def test_one_browser_per_key_and_separate_browsers_for_separate_keys(fake_chromi
 
 @pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass  # the fake browser's reparented helper is ours to stop
+def test_two_processes_on_one_profile_never_share_an_ephemeral_profile(fake_chromium):
+    """CLI + gateway on one profile launch the same key (``browser-exec-default``, a named session): each
+    process gets its own throwaway profile, and a launch never wipes the other process's live one."""
+    from hermes_constants import hermes_home_key
+    code = ("import sys; from tools.browser_launcher import _default_user_data_dir; "
+            "print(_default_user_data_dir(sys.argv[1], sys.argv[2]))")
+    other = Path(subprocess.run([sys.executable, "-c", code, "browser-exec-default", hermes_home_key()],
+                                cwd=Path(__file__).resolve().parents[2], env=dict(os.environ),
+                                capture_output=True, text=True, check=True).stdout.strip())
+    (other / "Default").mkdir(parents=True)
+    (other / "Default" / "Cookies").write_text("the other process's session")
+
+    mine, err = launcher.launch_chromium("browser-exec-default", env=dict(os.environ))
+    assert err is None
+    assert Path(mine.user_data_dir) != other
+    assert (other / "Default" / "Cookies").read_text() == "the other process's session"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # the fake browser's reparented helper is ours to stop
 def test_stop_signals_the_browser_before_its_helpers_and_removes_the_ephemeral_profile(fake_chromium):
     browser, _ = launcher.launch_chromium("stop-me", env=dict(os.environ))
     order_log = Path(browser.user_data_dir, "order.log")

@@ -173,8 +173,10 @@ def chromium_ready() -> tuple[bool, str]:
 # ── Launch ───────────────────────────────────────────────────────────────────────────────────────────
 
 def _default_user_data_dir(key: str, home_key: str) -> str:
+    """Per process too: two Hermes processes on one profile use the same keys (``browser-exec-default``,
+    named sessions), and each launch wipes its throwaway dir first."""
     digest = hashlib.sha256(f"{home_key}\0{key}".encode()).hexdigest()[:16]
-    return str(_ephemeral_root(home_key) / digest)
+    return str(_ephemeral_root(home_key) / f"{digest}-{os.getpid()}")
 
 
 def _launch_timeout(timeout: Optional[float]) -> float:
@@ -676,8 +678,9 @@ def _reap_record(path: Path, home: str) -> bool:
     if reaped:
         _terminate(record["pid"], record.get("start_time"), None)
         logger.info("browser: reaped orphaned Chromium pid %s (%s)", record["pid"], record["user_data_dir"])
-        if record.get("ephemeral"):
-            shutil.rmtree(record["user_data_dir"], ignore_errors=True)
+    udd = record.get("user_data_dir")
+    if record.get("ephemeral") and isinstance(udd, str) and _inside_ephemeral_root(udd, home):
+        shutil.rmtree(udd, ignore_errors=True)  # its owner is gone: no launch reuses a per-process dir
     path.unlink(missing_ok=True)
     return reaped
 

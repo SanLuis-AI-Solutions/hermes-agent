@@ -212,6 +212,18 @@ class TestLeakedBrowserOfThisProcess:
         assert records.terminated == []
 
 
+def test_throwaway_profile_of_a_crashed_owner_is_removed_even_when_its_browser_died_too(records, monkeypatch):
+    """Throwaway profiles are per process, so no later launch wipes a crashed process's dir: the reap does."""
+    udd = Path(records.ephemeral("crashed-abc-99999"))
+    (udd / "Default").mkdir(parents=True)
+    rec = _record(records, pid=4242, udd=str(udd))
+    monkeypatch.setattr(launcher, "_pid_alive", _alive())  # owner and browser both gone
+
+    assert launcher.reap_orphaned_browsers() == 0
+    assert records.terminated == []
+    assert not udd.exists() and not rec.exists()
+
+
 def test_browser_attached_after_its_owner_crashed_is_never_reaped_while_in_use(records, tmp_path, monkeypatch):
     """The next process ATTACHES to a crashed owner's persistent-profile Chromium (owned=False). The record
     still names the dead owner; this process takes it over, so no reaper kills the browser it handed out."""
