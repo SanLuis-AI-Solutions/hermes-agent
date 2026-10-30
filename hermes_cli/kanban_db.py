@@ -2032,9 +2032,46 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
+def _scheduled_blockers_resolved(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[list[str]]:
+    """Parent ids to release for a ``scheduled`` card, or ``None`` to leave it parked.
+
+    ``schedule_task`` records, in the newest ``scheduled`` event payload, the
+    parents that were NOT terminal at the moment the card was parked. Only a
+    card carrying that list is a dependency park, and only a dependency park may
+    be released. A card with no such list is an operator/Founder park (or a
+    legacy row written before the key existed) and must never be auto-released
+    by the promotion pass — that is the safety property, not an oversight.
+
+    A recorded id whose task row no longer exists counts as resolved: a deleted
+    blocker cannot gate the child forever.
+    """
+    row = _latest_event(conn, task_id, "scheduled")
+    recorded = _json_dict(_row_get(row, "payload")).get("blocked_by")
+    if not isinstance(recorded, list) or not recorded:
+        return None
+    blockers = [str(b) for b in recorded]
+    for blocker in blockers:
+        still = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (blocker,),
+        ).fetchone()
+        if still is not None and still["status"] not in ("done", "archived"):
+            return None
+    return blockers
+
+
 def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
-    """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
-    returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
+    """Promote ``todo``/``blocked``/``scheduled`` tasks whose parents are all
+    done/archived; returns the count. Opens its own IMMEDIATE txn — call OUTSIDE
+    any write txn.
+
+    ``scheduled`` is released only for dependency parks: a card whose
+    ``schedule_task`` payload recorded a non-empty ``blocked_by`` list and whose
+    every recorded blocker is now terminal. Operator/Founder parks and legacy
+    ``scheduled`` rows carry no such list and stay parked until ``unblock_task``
+    or a deliberate re-gate. Without this pass a card parked behind a running
+    parent had no exit at all once that parent finished.
 
     ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
     ``consecutive_failures`` reached the limit (else the breaker could never
@@ -2091,6 +2128,30 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
                     {"status": resume_status} if resume_status != "ready" else None,
                 )
                 promoted += 1
+        scheduled_rows = conn.execute(
+            "SELECT id FROM tasks WHERE status = 'scheduled'"
+        ).fetchall()
+        for row in scheduled_rows:
+            task_id = row["id"]
+            resolved = _scheduled_blockers_resolved(conn, task_id)
+            if resolved is None:
+                # Operator/Founder park, or a legacy row with no recorded
+                # blocker — never drained by the promotion pass.
+                continue
+            resume_status = _resume_status_from_events(conn, task_id)
+            cur = conn.execute(
+                "UPDATE tasks SET status = ? WHERE id = ? AND status = 'scheduled'",
+                (resume_status, task_id),
+            )
+            if cur.rowcount != 1:
+                # CAS lost (another writer moved the card) — not this pass's win.
+                continue
+            payload: dict[str, Any] = {}
+            if resume_status != "ready":
+                payload["status"] = resume_status
+            payload["resolved_blockers"] = resolved
+            _append_event(conn, task_id, "promoted", payload)
+            promoted += 1
     return promoted
 
 
@@ -3890,7 +3951,21 @@ def schedule_task(
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="scheduled", status="scheduled", summary=reason, synthesize=bool(reason),
         )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        # Record what actually blocked the card, so the promotion pass can later
+        # tell a dependency park (safe to release) from an operator/Founder park
+        # (must stay parked). Empty list stays omitted.
+        open_parents = [
+            r["id"] for r in conn.execute(
+                "SELECT t.id, t.status FROM tasks t "
+                "JOIN task_links l ON l.parent_id = t.id "
+                "WHERE l.child_id = ?", (task_id,),
+            ).fetchall()
+            if r["status"] not in ("done", "archived")
+        ]
+        sched_payload: dict[str, Any] = {"reason": reason}
+        if open_parents:
+            sched_payload["blocked_by"] = open_parents
+        _append_event(conn, task_id, "scheduled", sched_payload, run_id=run_id)
         return True
 
 
