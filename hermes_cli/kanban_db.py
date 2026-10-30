@@ -2033,13 +2033,20 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
 
 
 def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
-    """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
-    returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
+    """Promote ``todo``/``blocked``/``scheduled`` tasks whose parents are all
+    done/archived; returns the count. Opens its own IMMEDIATE txn — call OUTSIDE
+    any write txn.
 
     ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
     ``consecutive_failures`` reached the limit (else the breaker could never
     trip). Limit order matches ``_record_task_failure``: ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
+
+    ``scheduled`` cards are included so a card parked while its blocker was
+    still running is re-gated the moment that blocker clears; without this the
+    only exit was a manual ``unblock_task`` and the card stalled unowned. A
+    ``scheduled`` card with NO parent edge is a deliberate park (the
+    orchestrator re-gates it) and is left alone.
 
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
     explicit ``kanban_unblock`` (#28712).
@@ -2050,7 +2057,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     with write_txn(conn):
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
-            "FROM tasks WHERE status IN ('todo', 'blocked')"
+            "FROM tasks WHERE status IN ('todo', 'blocked', 'scheduled')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
@@ -2063,6 +2070,9 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?", (task_id,),
             ).fetchall()
+            if cur_status == "scheduled" and not parents:
+                # Deliberate park with no blocker to clear — never drained here.
+                continue
             if all(p["status"] in ("done", "archived") for p in parents):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
@@ -2080,6 +2090,14 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
                     conn.execute(
                         "UPDATE tasks SET status = ? "
                         "WHERE id = ? AND status = 'blocked'", (resume_status, task_id),
+                    )
+                elif cur_status == "scheduled":
+                    # Mirror ``unblock_task``: a parked card has no resumable
+                    # phase of its own, so a cleared blocker lands it in ready.
+                    resume_status = "ready"
+                    conn.execute(
+                        "UPDATE tasks SET status = 'ready' "
+                        "WHERE id = ? AND status = 'scheduled'", (task_id,),
                     )
                 else:
                     conn.execute(
