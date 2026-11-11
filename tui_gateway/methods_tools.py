@@ -1219,6 +1219,28 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4015, f"unknown action: {action}")
 
 
+def _toolsets_display(params: dict) -> str:
+    """The ``config.show`` "Toolsets" row: what this session actually runs with, via the same
+    resolution the agent build uses — never a config key. The old top-level ``enabled_toolsets``
+    key was inert (``_get_platform_tools`` reads ``platform_toolsets.<platform>``), so reading it
+    printed "all" for lanes pinned to a handful of toolsets.
+
+    A live session answers from its built agent; otherwise from the profile scope this RPC already
+    bound (``_session_toolsets`` re-binds the SESSION's own home, which would be the launch profile
+    when the caller asked for another one via ``profile``). ``None`` = unrestricted → "all";
+    an explicitly pinned empty selection → "(none)", because [] is a zero-tool state (#82010).
+    """
+    session = _sessions.get(params.get("session_id", ""))
+    if session:
+        enabled = _session_toolsets(session)[0]
+    else:
+        enabled = _load_enabled_toolsets(_resolve_agent_platform(_session_source(None)))
+    if enabled is None:
+        return "all"
+    names = sorted(enabled)
+    return ", ".join(names) if names else "(none)"
+
+
 @_scoped_rpc("config.show", 5030)
 def _(rid, params: dict) -> dict:
     cfg = _load_cfg()
@@ -1231,7 +1253,7 @@ def _(rid, params: dict) -> dict:
             ["Model", _resolve_model()], ["Base URL", base_url or "(default)"], ["API Key", masked]]},
         {"title": "Agent", "rows": [
             ["Max Turns", str(_cfg_max_turns(cfg, 500))],
-            ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
+            ["Toolsets", _toolsets_display(params)],
             ["Verbose", str(cfg.get("verbose", False))]]},
         {"title": "Environment", "rows": [["Working Dir", os.getcwd()], ["Config File", str(_active_config_path())]]},
     ]
