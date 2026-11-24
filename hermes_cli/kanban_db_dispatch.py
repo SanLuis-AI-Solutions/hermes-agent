@@ -728,6 +728,12 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     error=error, metadata=payload,
                 )
                 _kb._append_event(conn, tid, "timed_out", payload, run_id=run_id)
+                # A kill with nothing on the card is the failure this exists to end: if the worker
+                # left no checkpoint, the dispatcher says plainly that the attempt was cut off.
+                if run_id is not None:
+                    from hermes_cli import kanban_checkpoint
+                    kanban_checkpoint.record_cutoff(
+                        conn, tid, run_id, elapsed=int(elapsed), limit=limit, sigkill=killed)
                 timed_out.append(tid)
         # Outside the write_txn above because ``_record_task_failure`` opens its
         # own. If the breaker trips this flips the task to ``blocked`` and emits
