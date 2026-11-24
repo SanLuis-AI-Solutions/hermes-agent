@@ -807,6 +807,57 @@ def _rule_stale_running(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_silent_run(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A long attempt that ended non-done with zero runtime checkpoints.
+
+    Card t_9f2487ef: run 957 spent 41m19s against a 2400 s cap and left the card
+    with nothing at all. The worker client now writes a checkpoint itself, so
+    silence is no longer an expected zero — it means the writer did not run, and
+    that is a runtime defect an operator has to see, not a number that rounds to
+    "no problems". Exempt: archived cards and completed runs (a manual ``done``
+    appends no completed run).
+    """
+    if _task_field(task, "status") == "archived":
+        return []
+    min_seconds = int(cfg.get("silent_run_min_seconds", 10 * 60))
+    newest = _runs_newest_first(runs)[:1]
+    if not newest:
+        return []
+    run = newest[0]
+    outcome = _task_field(run, "outcome")
+    if (outcome or "completed") == "completed":
+        return []
+    started = _task_field(run, "started_at")
+    ended = _task_field(run, "ended_at")
+    if not ended:
+        return []
+    ran = int(ended) - int(started or 0)
+    if ran < min_seconds:
+        return []
+    run_id = int(_task_field(run, "id", 0) or 0)
+    if any(_task_field(e, "run_id") == run_id and _event_kind(e) == "run_checkpoint"
+           for e in events):
+        return []
+    task_id = _task_field(task, "id")
+    actions: list[DiagnosticAction] = []
+    if task_id:
+        actions.append(_log_hint_action(task_id))
+    actions.extend(_generic_recovery_actions(task, running=_is_running(task)))
+    return [Diagnostic(
+        kind="silent_run", severity="warning",
+        title=f"Run {run_id} ran {ran // 60}m and wrote nothing to its card",
+        detail=("The attempt ended non-done after "
+                f"{ran // 60}m{ran % 60:02d}s with outcome={outcome or 'unknown'} and left zero "
+                "runtime checkpoints. A capped run is expected to leave periodic progress "
+                "(elapsed time, artifact paths, git HEAD) written by the worker client itself. "
+                "Silence here means that writer did not run — treat the empty record as the "
+                "defect, not as a clean attempt."),
+        actions=actions,
+        first_seen_at=int(ended), last_seen_at=int(ended), count=1, run_id=run_id,
+        data={"outcome": outcome, "ran_seconds": ran},
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
@@ -820,6 +871,7 @@ _RULES: list[RuleFn] = [
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
     _rule_stale_running,
+    _rule_silent_run,
 ]
 
 
@@ -838,6 +890,10 @@ DEFAULT_CONFIG = {
     # still `running` an hour past its expiry means every reclaim path declined
     # it. Same hour the heartbeat backstop uses.
     "stale_running_grace_seconds": 60 * 60,
+    # Below ten minutes a non-done run wrote nothing because it barely started,
+    # not because the checkpoint writer failed; ten minutes is also the real
+    # timer interval, so a run past it should have ticked at least once.
+    "silent_run_min_seconds": 10 * 60,
 }
 
 
