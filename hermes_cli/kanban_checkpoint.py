@@ -31,8 +31,10 @@ INTERVAL_ENV = "HERMES_KANBAN_CHECKPOINT_INTERVAL_S"
 MARKER = "<!-- hermes-run-checkpoint v1 -->"
 EVENT_KIND = "run_checkpoint"
 AUTHOR = "hermes-runtime"
-# An exit-time checkpoint is always written (it says how the run ended); a timer checkpoint is
-# written only when an observable fact changed, so a stalled run does not paper the card.
+# An exit-time checkpoint is always written (it says how the run ended); timer checkpoints are
+# written on every tick up to this bound, so a runaway run gets a periodic record without papering
+# the card, and a short run (interval 600 s against a card that ends first) writes one line.
+MAX_TIMER_CHECKPOINTS = 12
 _WALK_LIMIT = 4000
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".mypy_cache"}
 
@@ -49,7 +51,7 @@ class RunCheckpoint:
     workspace: Optional[str] = None
     started: float = field(default_factory=time.time)
     _seq: int = 0
-    _fingerprint: Optional[str] = None
+    _timer_writes: int = 0
     _last_error: Optional[str] = None
 
     @classmethod
@@ -135,9 +137,17 @@ class RunCheckpoint:
         seen.sort(reverse=True)
         return [p for _, p in seen[:limit]]
 
+    def _db(self):
+        """A short-lived direct connection: the checkpoint must not pay for the board's
+        corruption probe / init lock every ten minutes, and it holds the write lock only for the
+        handful of statements below."""
+        import sqlite3
+        conn = sqlite3.connect(self.board_db, timeout=5.0, isolation_level=None)
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
     def _facts(self) -> dict:
-        from hermes_cli import kanban_db_connect
-        conn = kanban_db_connect.connect(Path(self.board_db))
+        conn = self._db()
         try:
             facts = self._board_facts(conn)
         finally:
@@ -171,42 +181,46 @@ class RunCheckpoint:
     def write(self, reason: str = "timer", *, force: bool = False) -> Optional[int]:
         """Append one checkpoint comment + ``run_checkpoint`` event, or None when suppressed.
 
-        Suppressed when nothing observable changed and this is a timer tick, when the caller no
+        Suppressed when this is a timer tick past ``MAX_TIMER_CHECKPOINTS``, when the caller no
         longer holds the claim (run ended, card re-claimed, task archived), or on any failure —
         a checkpoint must never take a run down with it.
         """
         facts = self._facts()
-        fingerprint = repr((facts.get("git"), facts.get("recent"), facts.get("heartbeats"),
-                            facts.get("last_note")))
-        if reason == "timer" and not force and fingerprint == self._fingerprint:
-            return None
+        if reason == "timer":
+            # Bound the record on a runaway run; a stalled run still gets a line every tick until
+            # the bound, which is the point (silence is the defect being repaired).
+            if self._timer_writes >= MAX_TIMER_CHECKPOINTS:
+                return None
         self._seq += 1
         body = self._body(reason, facts)
         try:
-            from hermes_cli import kanban_db_connect
-            conn = kanban_db_connect.connect(Path(self.board_db))
+            conn = self._db()
             try:
-                with kanban_db_connect.write_txn(conn):
-                    row = conn.execute(
-                        "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
-                        (self.task_id,)).fetchone()
-                    if row is None:
-                        return None
-                    status, current_run, lock = row[0], row[1], row[2]
-                    # The guard: this process writes only while it holds THIS attempt's claim.
-                    if status != "running" or int(current_run or -1) != self.run_id \
-                            or (lock or "") != self.claim_lock:
-                        return None
-                    cur = conn.execute(
-                        "INSERT INTO task_comments (task_id, author, body, created_at) "
-                        "VALUES (?, ?, ?, ?)",
-                        (self.task_id, AUTHOR, body, int(time.time())))
-                    conn.execute(
-                        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (self.task_id, self.run_id, EVENT_KIND,
-                         '{"reason": "%s", "seq": %d}' % (reason, self._seq), int(time.time())))
-                self._fingerprint = fingerprint
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+                    (self.task_id,)).fetchone()
+                if row is None:
+                    conn.execute("ROLLBACK")
+                    return None
+                status, current_run, lock = row[0], row[1], row[2]
+                # The guard: this process writes only while it holds THIS attempt's claim.
+                if status != "running" or int(current_run or -1) != self.run_id \
+                        or (lock or "") != self.claim_lock:
+                    conn.execute("ROLLBACK")
+                    return None
+                cur = conn.execute(
+                    "INSERT INTO task_comments (task_id, author, body, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (self.task_id, AUTHOR, body, int(time.time())))
+                conn.execute(
+                    "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (self.task_id, self.run_id, EVENT_KIND,
+                     '{"reason": "%s", "seq": %d}' % (reason, self._seq), int(time.time())))
+                conn.execute("COMMIT")
+                if reason == "timer":
+                    self._timer_writes += 1
                 return int(cur.lastrowid or 0)
             finally:
                 conn.close()

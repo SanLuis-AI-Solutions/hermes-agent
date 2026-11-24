@@ -52,37 +52,54 @@ def fixture(tmp: Path, name: str, *, lock: str = "host:0") -> tuple[str, str, st
 
 
 WORKER = """
-import sys, time
+import asyncio, sqlite3, sys, time
+from pathlib import Path
 sys.path.insert(0, {repo!r})
 from hermes_cli.kanban_checkpoint import RunCheckpoint
 cp = RunCheckpoint(task_id={task!r}, run_id=1, claim_lock={lock!r}, board_db={db!r},
                    workspace={ws!r})
 # A heartbeat the way a model's kanban_heartbeat writes one, so the snapshot has board facts.
-from hermes_cli import kanban_db_connect
-conn = kanban_db_connect.connect({db!r})
-with kanban_db_connect.write_txn(conn):
-    conn.execute("INSERT INTO task_events (task_id, run_id, kind, payload, created_at)"
-                 " VALUES (?,1,'heartbeat',?,?)", ({task!r}, '{{"note": "training epoch 3/50"}}',
-                                                   int(time.time())))
+conn = sqlite3.connect({db!r}, timeout=5.0, isolation_level=None)
+conn.execute("PRAGMA busy_timeout=5000")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute("INSERT INTO task_events (task_id, run_id, kind, payload, created_at)"
+             " VALUES (?,1,'heartbeat',?,?)", ({task!r}, '{{"note": "training epoch 3/50"}}',
+                                               int(time.time())))
+conn.execute("COMMIT")
 conn.close()
-for i in range(1, {ticks}):
-    (open({artifact!r}, "a") if i == 1 else None)
-    with open({artifact!r}, "a") as fh:
-        fh.write(f"tick {{i}}\\n")
-    cp.write("timer")           # the timer body, called on the same schedule
-    time.sleep(1.0)
-cp.finish("exit")
+open({ready!r}, "w").close()
+cp.started = time.time()   # the run's clock starts when work starts
+
+
+async def main():
+    ticker = asyncio.create_task(cp.timer_loop({interval!r}))   # the real timer task
+    for i in range(1, {ticks}):
+        with open({artifact!r}, "a") as fh:
+            fh.write(f"tick {{i}}\\n")
+        await asyncio.sleep(1.0)
+    ticker.cancel()
+    cp.finish("exit")
+
+asyncio.run(main())
 """
 
 
-def run_worker(db, task, lock, ws, artifact, ticks):
+def run_worker(db, task, lock, ws, artifact, ticks, interval=2.0):
+    ready = Path(ws) / "ready.txt"
     code = WORKER.format(repo=str(REPO), db=db, task=task, lock=lock, ws=str(ws),
-                         artifact=str(artifact), ticks=ticks)
+                         artifact=str(artifact), ticks=ticks, interval=interval, ready=str(ready))
     script = Path(ws) / "_worker.py"
     script.write_text(code, encoding="utf-8")
     env = dict(os.environ)
     env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
-    return subprocess.Popen([sys.executable, str(script)], env=env, cwd=str(ws))
+    proc = subprocess.Popen([sys.executable, str(script)], env=env, cwd=str(ws))
+    # The cap clock starts when the worker is actually working, not while the interpreter boots.
+    deadline = time.time() + 120
+    while not ready.exists() and time.time() < deadline:
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    return proc
 
 
 def card(db, task):
@@ -144,7 +161,9 @@ def main() -> int:
     ws2 = tmp / "ws-clean"
     ws2.mkdir()
     art2 = ws2 / "clean-output.txt"
-    proc2 = run_worker(db2, task2, lock2, ws2, art2, ticks=3)
+    # Interval 30 s against a 3 s run: the real relationship (600 s interval, a card that ends
+    # before the first tick), so the clean record must hold exactly one closing checkpoint.
+    proc2 = run_worker(db2, task2, lock2, ws2, art2, ticks=3, interval=30.0)
     proc2.wait(timeout=30)
     comments2, kinds2 = card(db2, task2)
     ck2 = [b for _, b in comments2 if "hermes-run-checkpoint" in b]
