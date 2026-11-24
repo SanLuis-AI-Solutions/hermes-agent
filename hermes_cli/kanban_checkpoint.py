@@ -253,7 +253,7 @@ def record_cutoff(conn, task_id: str, run_id: int, *, elapsed: int, limit: int,
     """Dispatcher-side backstop, inside the caller's txn: when a capped run left no checkpoint,
     write one line saying it was cut off. Called from ``enforce_max_runtime`` after ``_end_run``
     (the run is already closed, so this is a plain INSERT and no claim CAS applies)."""
-    if checkpoint_count(conn, task_id, run_id):
+    if checkpoint_count(conn, task_id, run_id) or _cutoff_count(conn, task_id, run_id):
         return None
     how = "SIGTERM then SIGKILL" if sigkill else "SIGTERM"
     body = (f"<!-- hermes-run-cutoff v1 run={run_id} -->\n"
@@ -274,10 +274,19 @@ def record_cutoff(conn, task_id: str, run_id: int, *, elapsed: int, limit: int,
 
 def checkpoint_count(conn, task_id: str, run_id: int) -> int:
     """How many checkpoints this attempt left — the scorecard's 'did the record survive' probe."""
+    return _kind_count(conn, task_id, run_id, EVENT_KIND)
+
+
+def _kind_count(conn, task_id: str, run_id: int, kind: str) -> int:
     row = conn.execute(
         "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND run_id = ? AND kind = ?",
-        (task_id, int(run_id), EVENT_KIND)).fetchone()
+        (task_id, int(run_id), kind)).fetchone()
     return int(row[0] or 0)
+
+
+def _cutoff_count(conn, task_id: str, run_id: int) -> int:
+    """A retried dispatcher tick must not stack duplicate 'cut off' evidence on the card."""
+    return _kind_count(conn, task_id, run_id, "run_cutoff")
 
 
 def silent_run(conn, task_id: str, *, min_seconds: int = 600) -> Optional[dict]:
