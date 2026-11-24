@@ -191,3 +191,45 @@ def test_silent_run_scores_a_long_silent_attempt_as_suspicious(board, tmp_path):
         assert kc.silent_run(conn, "t_card", min_seconds=600) is None
     finally:
         conn.close()
+
+
+# --- scorecard: silence is a defect to surface -------------------------------------------
+
+
+def _diagnose(runs, events):
+    from hermes_cli import kanban_diagnostics as kd
+    task = {"id": "t_card", "status": "blocked", "consecutive_failures": 0}
+    return [d for d in kd.compute_task_diagnostics(task, events, runs, now=10_000)
+            if d.kind == "silent_run"]
+
+
+def test_a_long_run_without_checkpoints_is_surfaced_as_a_defect():
+    """Run 957's shape — 41m non-done, nothing written — must not score as a quiet zero."""
+    runs = [{"id": 1, "task_id": "t_card", "outcome": "timed_out",
+             "started_at": 0, "ended_at": 2479}]
+
+    found = _diagnose(runs, [])
+
+    assert len(found) == 1
+    assert found[0].severity == "warning"
+    assert found[0].run_id == 1
+    assert found[0].data["ran_seconds"] == 2479
+
+
+def test_a_run_that_left_a_checkpoint_is_not_a_silent_run():
+    runs = [{"id": 1, "task_id": "t_card", "outcome": "timed_out",
+             "started_at": 0, "ended_at": 2479}]
+    events = [{"id": 1, "task_id": "t_card", "run_id": 1, "kind": "run_checkpoint",
+               "payload": '{"reason": "timer", "seq": 1}', "created_at": 600}]
+
+    assert _diagnose(runs, events) == []
+
+
+def test_short_and_completed_runs_are_not_silent_run_defects():
+    short = [{"id": 1, "task_id": "t_card", "outcome": "crashed",
+              "started_at": 0, "ended_at": 90}]
+    completed = [{"id": 2, "task_id": "t_card", "outcome": "completed",
+                  "started_at": 0, "ended_at": 4000}]
+
+    assert _diagnose(short, []) == []
+    assert _diagnose(completed, []) == []
