@@ -10,8 +10,9 @@ import psutil
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, claim_session_input,
-                                  register_worker_execution, settle_session_input)
+from hermes_state_runtime import (admission_worker_key, admit_session_input, begin_runtime_epoch,
+                                  claim_session_input, register_worker_execution,
+                                  settle_session_input)
 
 
 def hello(process):
@@ -70,6 +71,12 @@ async def test_reserved_process_uses_existing_authenticated_adoption_and_persist
         admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
         claim_session_input(db, epoch=epoch, session_id='owned')
         scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process, principal_id='human', hello=hello(process))
+        # The reservation's proof of identity is persisted: it is the only witness a later
+        # submission has for telling this attempt's death from a live worker still running it.
+        witness = db._execute_write(lambda conn: conn.execute(
+            'SELECT value FROM state_meta WHERE key=?',
+            (admission_worker_key(admitted['admission_id']),)).fetchone())
+        assert witness is not None and json.loads(witness[0])['pid'] == process.pid
         actor = SimpleNamespace(subject='human', profile_id=str(tmp_path), capabilities={'worker:adopt'})
         connection = SimpleNamespace(authority=authority, actor=actor)
         identity = {k: v for k, v in scope.items() if k != 'epoch'}

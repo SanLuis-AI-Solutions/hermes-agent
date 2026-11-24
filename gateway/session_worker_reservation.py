@@ -9,7 +9,8 @@ import subprocess
 
 from gateway.session_admission import admission_fingerprint
 from gateway.owner_identity import same_owner
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, _secret_digest, _session
+from hermes_state_runtime import (RuntimeStoreError, _admission, _epoch, _secret_digest, _session,
+                                  record_admission_worker)
 
 # A venv launcher (uv's Windows python.exe, pip's exe shim) sits between the owner's
 # handle and the interpreter; the real worker is never further away than this.
@@ -105,6 +106,9 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
         conn.execute("INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,adoption_digest) "
                      "VALUES(?,?,'compute',?,?,'registered',?)",
                      (execution_id, sid, authority.epoch, generation, _secret_digest(claim)))
+        # The identity this reservation just proved is the only durable way a later submission can
+        # tell a dead attempt from a running one (``admit_session_input`` reads it on an unknown row).
+        record_admission_worker(conn, admission_id, pid, birth)
         return scope | {'epoch': authority.epoch}
 
     return authority.db._execute_write(write)
