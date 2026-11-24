@@ -114,7 +114,8 @@ def test_a_reclaimed_run_writes_nothing(board, tmp_path):
 
 
 def test_timer_checkpoints_are_bounded_but_the_exit_checkpoint_is_not(board, tmp_path):
-    """A runaway run stops papering the card, and still records how it ended."""
+    """A runaway run stops papering the card, and still records how it ended while it holds the
+    claim (the cap's SIGTERM / crash path)."""
     cp = writer(board, tmp_path)
     for _ in range(kc.MAX_TIMER_CHECKPOINTS + 3):
         cp.write("timer")
@@ -124,6 +125,71 @@ def test_timer_checkpoints_are_bounded_but_the_exit_checkpoint_is_not(board, tmp
     bodies = comments(board)
     assert len(bodies) == kc.MAX_TIMER_CHECKPOINTS + 1
     assert "finished" in bodies[-1]
+
+
+def test_sigterm_checkpoint_continues_the_sequence(board, tmp_path):
+    """The SIGTERM hook builds its own writer; its line must not restart at seq 1.
+
+    A cap kill's last line is the evidence a reader trusts most, so it is numbered *after* the
+    timer checkpoints that came before it, not before them.
+    """
+    cp = writer(board, tmp_path)
+    assert cp.write("timer") is not None
+    assert cp.write("timer") is not None
+
+    # The handler's exact shape: a fresh instance for the same attempt (kanban_worker_client).
+    handler = writer(board, tmp_path)
+    assert handler.finish("sigterm") is not None
+
+    payloads = [json.loads(r[0]) for r in events(board, kc.EVENT_KIND)]
+    assert [p["seq"] for p in payloads] == [1, 2, 3]
+    assert [p["reason"] for p in payloads] == ["timer", "timer", "sigterm"]
+    assert "run checkpoint 3" in comments(board)[-1]
+    assert "cut off (SIGTERM)" in comments(board)[-1]
+
+
+def test_a_settled_clean_run_leaves_no_closing_checkpoint(board, tmp_path):
+    """Production ordering: the owner's handoff settles the card before the client exits.
+
+    ``kanban_complete``/``kanban_request_review`` run inside the owner's turn and set
+    ``claim_lock = NULL`` and ``current_run_id = NULL``; by the time the worker client reaches
+    ``finish('exit')`` it no longer holds the claim, so no closing line can be written without a
+    fresh ownership proof. A run shorter than the interval therefore leaves zero checkpoints.
+    """
+    conn = kbc.connect(Path(board))
+    try:
+        with kbc.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'review', claim_lock = NULL, current_run_id = NULL"
+                " WHERE id = 't_card'")
+    finally:
+        conn.close()
+
+    assert writer(board, tmp_path).finish("exit") is None
+    assert comments(board) == []
+    assert events(board, kc.EVENT_KIND) == []
+
+
+def test_a_settled_run_keeps_its_timer_record_and_gains_no_finished_line(board, tmp_path):
+    """A long clean run is not retroactively rewritten: its timer lines stand, and no line
+    claims a 'finished' state the settled card never reached."""
+    cp = writer(board, tmp_path)
+    assert cp.write("timer") is not None
+
+    conn = kbc.connect(Path(board))
+    try:
+        with kbc.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'review', claim_lock = NULL, current_run_id = NULL"
+                " WHERE id = 't_card'")
+    finally:
+        conn.close()
+
+    assert cp.finish("exit") is None
+    bodies = comments(board)
+    assert len(bodies) == 1
+    assert "in flight" in bodies[0]
+    assert "finished" not in bodies[0]
 
 
 def test_exit_paths_say_plainly_that_the_run_was_cut_off(board, tmp_path):

@@ -9,7 +9,12 @@ ownership CAS, the same hard kill.
 Scenario A (over cap, hard kill): child checkpoints every 2 s, parent SIGKILLs it at the cap the
 way a Windows dispatcher does (TerminateProcess, no catchable handler). The card must already
 carry checkpoints and a named artifact.
-Scenario B (clean): child runs 3 s and exits normally; exactly one closing checkpoint, no noise.
+Scenario B (clean, real ordering): the child settles its own card (status='review', claim_lock and
+current_run_id cleared, exactly what kanban_complete/kanban_request_review do in the owner's turn)
+and then reaches its exit checkpoint — which the ownership CAS refuses. A clean run shorter than
+the interval leaves zero checkpoints: no clutter.
+Scenario B2 (long clean): a clean run that already left timer checkpoints keeps them and gains no
+"finished" line, because the settled card never reaches a state the closing line could claim.
 Scenario C (dispatcher backstop): a capped run with zero checkpoints gets a 'cut off' line from
 ``record_cutoff``, and a run that already checkpointed gets none.
 
@@ -78,16 +83,28 @@ async def main():
             fh.write(f"tick {{i}}\\n")
         await asyncio.sleep(1.0)
     ticker.cancel()
+    # The owner's handoff (kanban_complete / kanban_request_review) runs inside the model's turn
+    # and clears BOTH claim_lock and current_run_id before this process exits. Model that real
+    # ordering instead of a card still running at exit.
+    if {settle!r}:
+        conn = sqlite3.connect({db!r}, timeout=5.0, isolation_level=None)
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("UPDATE tasks SET status = 'review', claim_lock = NULL,"
+                     " current_run_id = NULL WHERE id = ?", ({task!r},))
+        conn.execute("COMMIT")
+        conn.close()
     cp.finish("exit")
 
 asyncio.run(main())
 """
 
 
-def run_worker(db, task, lock, ws, artifact, ticks, interval=2.0):
+def run_worker(db, task, lock, ws, artifact, ticks, interval=2.0, settle=False):
     ready = Path(ws) / "ready.txt"
     code = WORKER.format(repo=str(REPO), db=db, task=task, lock=lock, ws=str(ws),
-                         artifact=str(artifact), ticks=ticks, interval=interval, ready=str(ready))
+                         artifact=str(artifact), ticks=ticks, interval=interval, ready=str(ready),
+                         settle=settle)
     script = Path(ws) / "_worker.py"
     script.write_text(code, encoding="utf-8")
     env = dict(os.environ)
@@ -155,23 +172,41 @@ def main() -> int:
     say(f"RESULT A: {'PASS' if ok_a else 'FAIL'}")
     say()
 
-    # --- B: clean run ---------------------------------------------------------------------
-    say("=== B. clean run, no kill: checkpoints must not clutter the record ===")
+    # --- B: clean run, settled by its own handoff ------------------------------------------
+    say("=== B. clean run: the owner's handoff settles the card before the client exits ===")
     db2, task2, run2, lock2 = fixture(tmp, "clean", lock="host:4243")
     ws2 = tmp / "ws-clean"
     ws2.mkdir()
     art2 = ws2 / "clean-output.txt"
     # Interval 30 s against a 3 s run: the real relationship (600 s interval, a card that ends
-    # before the first tick), so the clean record must hold exactly one closing checkpoint.
-    proc2 = run_worker(db2, task2, lock2, ws2, art2, ticks=3, interval=30.0)
+    # before the first tick). The handoff settles the card, so the exit checkpoint is refused and
+    # the record must hold zero checkpoints — the clean job leaves no clutter.
+    proc2 = run_worker(db2, task2, lock2, ws2, art2, ticks=3, interval=30.0, settle=True)
     proc2.wait(timeout=30)
     comments2, kinds2 = card(db2, task2)
     ck2 = [b for _, b in comments2 if "hermes-run-checkpoint" in b]
     say(f"worker exit code {proc2.returncode}; comments on the card: {len(comments2)}")
     say(f"checkpoints: {len(ck2)} (event kinds: {json.dumps(kinds2)})")
-    say(ck2[0] if ck2 else "(none)")
-    ok_b = len(ck2) == 1 and "finished" in ck2[0]
-    say(f"RESULT B: {'PASS' if ok_b else 'FAIL'}")
+    ok_b = len(ck2) == 0 and "run_checkpoint" not in kinds2
+    say(f"RESULT B: {'PASS' if ok_b else 'FAIL'} (zero checkpoints = the clean record is empty)")
+    say()
+
+    # --- B2: long clean run, settled by its own handoff --------------------------------------
+    say("=== B2. long clean run: timer lines stand, no line claims a state the card never reached ===")
+    db4, task4, run4, lock4 = fixture(tmp, "cleanlong", lock="host:4245")
+    ws4 = tmp / "ws-cleanlong"
+    ws4.mkdir()
+    art4 = ws4 / "long-output.txt"
+    proc4 = run_worker(db4, task4, lock4, ws4, art4, ticks=4, interval=1.0, settle=True)
+    proc4.wait(timeout=30)
+    comments4, kinds4 = card(db4, task4)
+    ck4 = [b for _, b in comments4 if "hermes-run-checkpoint" in b]
+    say(f"worker exit code {proc4.returncode}; checkpoints: {len(ck4)} "
+        f"(event kinds: {json.dumps(kinds4)})")
+    say(ck4[-1] if ck4 else "(none)")
+    ok_b2 = bool(ck4) and all("in flight" in b for b in ck4) \
+        and not any("finished" in b for b in ck4)
+    say(f"RESULT B2: {'PASS' if ok_b2 else 'FAIL'} (timer record kept; no unreachable 'finished')")
     say()
 
     # --- C: dispatcher backstop + ownership guard ------------------------------------------
@@ -192,16 +227,17 @@ def main() -> int:
     cp_stale = kanban_checkpoint.RunCheckpoint(task_id="overcap", run_id=1,
                                                claim_lock="host:9999", board_db=db,
                                                workspace=str(ws))
-    wrote = cp_stale.write("timer", force=True)
+    wrote = cp_stale.write("timer")
     say(f"foreign claim_lock write returned {wrote!r} (None = refused, guard intact)")
     cp_ok = kanban_checkpoint.checkpoint_count(
         kanban_db_connect.connect(Path(db)), "overcap", 1)
     ok_c = len(comments3) == 1 and wrote is None and cp_ok == len(ck)
     say(f"RESULT C: {'PASS' if ok_c else 'FAIL'}")
     say()
-    say(f"OVERALL: {'PASS' if (ok_a and ok_b and ok_c) else 'FAIL'}")
+    ok_all = ok_a and ok_b and ok_b2 and ok_c
+    say(f"OVERALL: {'PASS' if ok_all else 'FAIL'}")
     (tmp / "proof.log").write_text("\n".join(out) + "\n", encoding="utf-8")
-    return 0 if (ok_a and ok_b and ok_c) else 1
+    return 0 if ok_all else 1
 
 
 if __name__ == "__main__":
