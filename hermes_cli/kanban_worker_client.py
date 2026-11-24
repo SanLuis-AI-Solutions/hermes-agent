@@ -51,7 +51,10 @@ async def run(params, board_db, workspace=None):
 
     The checkpoint is this process's, not the model's: ``timer_loop`` writes every ten minutes
     whether or not the agent is still taking turns (a capped run is killed mid-tool-call), and
-    ``finish`` writes one closing checkpoint on normal exit, exception, SIGTERM and cancellation.
+    ``finish`` writes one closing checkpoint on the paths where this process still holds the
+    attempt's claim — SIGTERM (the cap), exception, cancellation. A clean run whose own handoff
+    (``kanban_complete`` / ``kanban_request_review``) already settled the card writes nothing on
+    exit; a clean run shorter than the interval therefore leaves no checkpoint at all.
     """
     from hermes_cli import kanban_checkpoint
     checkpoints = kanban_checkpoint.RunCheckpoint.from_params(params, board_db, workspace)

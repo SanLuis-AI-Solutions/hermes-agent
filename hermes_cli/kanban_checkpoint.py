@@ -20,6 +20,7 @@ import asyncio
 import os
 from dataclasses import dataclass, field
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -53,6 +54,10 @@ class RunCheckpoint:
     _seq: int = 0
     _timer_writes: int = 0
     _last_error: Optional[str] = None
+    # The timer writes from a worker thread and the SIGTERM hook from the main thread: sequence
+    # numbers and the timer bound are shared state, so one write at a time.
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False,
+                                  compare=False)
 
     @classmethod
     def from_params(cls, params: dict, board_db: str, workspace: Optional[str] = None):
@@ -155,13 +160,13 @@ class RunCheckpoint:
         facts.update({"git": self._git_facts(), "recent": self._recent_paths()})
         return facts
 
-    def _body(self, reason: str, facts: dict) -> str:
+    def _body(self, reason: str, facts: dict, seq: int) -> str:
         git = facts.get("git") or {}
         elapsed = int(self._elapsed())
-        lines = [f"{MARKER} run={self.run_id} seq={self._seq} reason={reason}"]
+        lines = [f"{MARKER} run={self.run_id} seq={seq} reason={reason}"]
         state = {"timer": "in flight", "exit": "finished", "sigterm": "cut off (SIGTERM)",
                  "error": "cut off (error)", "cancelled": "cut off (cancelled)"}.get(reason, reason)
-        lines.append(f"run checkpoint {self._seq} · +{elapsed // 60}m{elapsed % 60:02d}s · {state}")
+        lines.append(f"run checkpoint {seq} · +{elapsed // 60}m{elapsed % 60:02d}s · {state}")
         heard = facts.get("heartbeats", 0)
         note = facts.get("last_note") or ""
         lines.append(f"board: {heard} heartbeat{'s' if heard != 1 else ''}"
@@ -178,55 +183,65 @@ class RunCheckpoint:
         return "\n".join(lines)
 
     # --- write ---------------------------------------------------------------------------
-    def write(self, reason: str = "timer", *, force: bool = False) -> Optional[int]:
+    def write(self, reason: str = "timer") -> Optional[int]:
         """Append one checkpoint comment + ``run_checkpoint`` event, or None when suppressed.
 
         Suppressed when this is a timer tick past ``MAX_TIMER_CHECKPOINTS``, when the caller no
-        longer holds the claim (run ended, card re-claimed, task archived), or on any failure —
-        a checkpoint must never take a run down with it.
+        longer holds the claim (run ended, card settled by its own handoff, card re-claimed, task
+        archived), or on any failure — a checkpoint must never take a run down with it.
+
+        The sequence number is seeded from the checkpoints this attempt already left, so a second
+        writer for the same run (the SIGTERM hook builds its own instance) continues the record
+        instead of restarting it at 1.
         """
         facts = self._facts()
-        if reason == "timer":
-            # Bound the record on a runaway run; a stalled run still gets a line every tick until
-            # the bound, which is the point (silence is the defect being repaired).
-            if self._timer_writes >= MAX_TIMER_CHECKPOINTS:
-                return None
-        self._seq += 1
-        body = self._body(reason, facts)
-        try:
-            conn = self._db()
+        with self._lock:
+            if reason == "timer":
+                # Bound the record on a runaway run; a stalled run still gets a line every tick
+                # until the bound, which is the point (silence is the defect being repaired).
+                if self._timer_writes >= MAX_TIMER_CHECKPOINTS:
+                    return None
+            seq = max(self._seq, int(facts.get("prior_checkpoints") or 0)) + 1
+            body = self._body(reason, facts, seq)
             try:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
-                    (self.task_id,)).fetchone()
-                if row is None:
-                    conn.execute("ROLLBACK")
-                    return None
-                status, current_run, lock = row[0], row[1], row[2]
-                # The guard: this process writes only while it holds THIS attempt's claim.
-                if status != "running" or int(current_run or -1) != self.run_id \
-                        or (lock or "") != self.claim_lock:
-                    conn.execute("ROLLBACK")
-                    return None
-                cur = conn.execute(
-                    "INSERT INTO task_comments (task_id, author, body, created_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (self.task_id, AUTHOR, body, int(time.time())))
-                conn.execute(
-                    "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (self.task_id, self.run_id, EVENT_KIND,
-                     '{"reason": "%s", "seq": %d}' % (reason, self._seq), int(time.time())))
-                conn.execute("COMMIT")
-                if reason == "timer":
-                    self._timer_writes += 1
-                return int(cur.lastrowid or 0)
-            finally:
-                conn.close()
-        except Exception as exc:  # a checkpoint is telemetry: never the reason a run dies
-            self._last_error = f"{type(exc).__name__}: {exc}"
-            return None
+                conn = self._db()
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    row = conn.execute(
+                        "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+                        (self.task_id,)).fetchone()
+                    if row is None:
+                        conn.execute("ROLLBACK")
+                        return None
+                    status, current_run, lock = row[0], row[1], row[2]
+                    # The guard: this process writes only while it holds THIS attempt's claim.
+                    # ``running`` is part of it: ``complete_task``/``request_review`` clear both
+                    # the claim and the run id inside the owner's turn, so a closing line here
+                    # after that handoff cannot be written without a fresh ownership proof — and
+                    # the settled card's own events already say how the run ended.
+                    if status != "running" or int(current_run or -1) != self.run_id \
+                            or (lock or "") != self.claim_lock:
+                        conn.execute("ROLLBACK")
+                        return None
+                    cur = conn.execute(
+                        "INSERT INTO task_comments (task_id, author, body, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (self.task_id, AUTHOR, body, int(time.time())))
+                    conn.execute(
+                        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (self.task_id, self.run_id, EVENT_KIND,
+                         '{"reason": "%s", "seq": %d}' % (reason, seq), int(time.time())))
+                    conn.execute("COMMIT")
+                    self._seq = seq
+                    if reason == "timer":
+                        self._timer_writes += 1
+                    return int(cur.lastrowid or 0)
+                finally:
+                    conn.close()
+            except Exception as exc:  # a checkpoint is telemetry: never the reason a run dies
+                self._last_error = f"{type(exc).__name__}: {exc}"
+                return None
 
     async def timer_loop(self, interval: Optional[float] = None) -> None:
         every = interval if interval is not None else _interval()
@@ -235,8 +250,15 @@ class RunCheckpoint:
             await asyncio.to_thread(self.write, "timer")
 
     def finish(self, reason: str) -> Optional[int]:
-        """Exit-path checkpoint. Synchronous and never raises (see ``write``)."""
-        return self.write(reason, force=True)
+        """Exit-path checkpoint. Synchronous and never raises (see ``write``).
+
+        It lands when the process still holds the attempt's claim — the cap's SIGTERM, a crash, a
+        cancellation, a lost owner. A run that ended *by its own handoff* (``kanban_complete`` /
+        ``kanban_request_review`` run inside the owner's turn and clear ``claim_lock`` and
+        ``current_run_id``) is already settled, so this returns None: its timer checkpoints, or
+        nothing at all for a run shorter than the interval, are its record.
+        """
+        return self.write(reason)
 
 
 def _interval() -> float:

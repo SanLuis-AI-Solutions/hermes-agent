@@ -1,11 +1,11 @@
-subject: kanban_checkpoint.py sha256=3b8b7efa67fab22a98dc24248e36e65e37bbce7b1c63c28bdf65633f79a6bb96
+subject: kanban_checkpoint.py sha256=9844753a4fb170e73bba428a4c823741ad63ddde4d6fc0c71c4f6b5b6fd0dc9b
 compressed timing: interval 2s / cap 8s (a real run: 600s interval / 2400s cap)
 
 === A. over-cap run, hard-killed at the cap (TerminateProcess: no catchable handler) ===
-cap reached after 8s; worker pid 134248 alive=True
+cap reached after 8s; worker pid 132504 alive=True
 worker exit code 1 (killed, no orderly exit)
 checkpoints on the card after the kill: 3  (event kinds: {"heartbeat": 1, "run_checkpoint": 3})
-named artifact present: True -> C:\Users\ninef\AppData\Local\Temp\checkpoint-proof-8ueftxx7\ws-overcap\artifact-report.md (64 bytes)
+named artifact present: True -> C:\Users\ninef\AppData\Local\Temp\checkpoint-proof-5l1uzoxy\ws-overcap\artifact-report.md (64 bytes)
 --- last checkpoint as the card shows it ---
 <!-- hermes-run-checkpoint v1 --> run=1 seq=3 reason=timer
 run checkpoint 3 · +0m06s · in flight
@@ -15,14 +15,18 @@ written this run: artifact-report.md, ready.txt, _worker.py
 run checkpoint 1 · +0m02s · in flight
 RESULT A: PASS
 
-=== B. clean run, no kill: checkpoints must not clutter the record ===
-worker exit code 0; comments on the card: 1
-checkpoints: 1 (event kinds: {"heartbeat": 1, "run_checkpoint": 1})
-<!-- hermes-run-checkpoint v1 --> run=1 seq=1 reason=exit
-run checkpoint 1 · +0m02s · finished
+=== B. clean run: the owner's handoff settles the card before the client exits ===
+worker exit code 0; comments on the card: 0
+checkpoints: 0 (event kinds: {"heartbeat": 1})
+RESULT B: PASS (zero checkpoints = the clean record is empty)
+
+=== B2. long clean run: timer lines stand, no line claims a state the card never reached ===
+worker exit code 0; checkpoints: 2 (event kinds: {"heartbeat": 1, "run_checkpoint": 2})
+<!-- hermes-run-checkpoint v1 --> run=1 seq=2 reason=timer
+run checkpoint 2 · +0m02s · in flight
 board: 1 heartbeat, last: training epoch 3/50
-written this run: clean-output.txt, ready.txt, _worker.py
-RESULT B: PASS
+written this run: long-output.txt, ready.txt, _worker.py
+RESULT B2: PASS (timer record kept; no unreachable 'finished')
 
 === C. dispatcher backstop: silent run is surfaced, owned run is not duplicated ===
 cutoff lines written for a silent run: 1
