@@ -46,7 +46,33 @@ class _Claim:
         return time.monotonic() - self.answered
 
 
-async def run(params, board_db):
+async def run(params, board_db, workspace=None):
+    """Drive the claim to a settled receipt, checkpointing the card on every path out.
+
+    The checkpoint is this process's, not the model's: ``timer_loop`` writes every ten minutes
+    whether or not the agent is still taking turns (a capped run is killed mid-tool-call), and
+    ``finish`` writes one closing checkpoint on normal exit, exception, SIGTERM and cancellation.
+    """
+    from hermes_cli import kanban_checkpoint
+    checkpoints = kanban_checkpoint.RunCheckpoint.from_params(params, board_db, workspace)
+    ticker = asyncio.create_task(checkpoints.timer_loop())
+    reason = 'exit'
+    try:
+        return await _drive_claim(params, board_db)
+    except asyncio.CancelledError:
+        reason = 'cancelled'
+        raise
+    except BaseException:
+        reason = 'error'
+        raise
+    finally:
+        ticker.cancel()
+        # Synchronous by design: the last checkpoint has to be on the card before a SIGKILL that
+        # may already be queued, so this path must not await.
+        checkpoints.finish(reason)
+
+
+async def _drive_claim(params, board_db):
     from agent.retry_utils import jittered_backoff
     from hermes_cli.gateway_client import connect_gateway, GatewayClientError, outside_restart_wait
     from hermes_cli.gateway_owner_restart import restartable
@@ -158,6 +184,8 @@ def _submit():
         params = {'board': os.environ['HERMES_KANBAN_BOARD'], 'task_id': os.environ['HERMES_KANBAN_TASK'],
             'run_id': int(os.environ['HERMES_KANBAN_RUN_ID']), 'claim_lock': os.environ['HERMES_KANBAN_CLAIM_LOCK']}
         board_db = os.environ['HERMES_KANBAN_DB']
+        # The checkpoint writer needs the workspace before the identity keys below are dropped.
+        workspace = os.environ.get('HERMES_KANBAN_WORKSPACE') or os.getcwd()
         # Owner startup must never inherit this worker's task/tool/goal identity.
         for key in list(os.environ):
             # The busy timeout is a host tuning knob, not task identity: the answer budget reads it.
@@ -165,10 +193,34 @@ def _submit():
                 os.environ.pop(key)
         for key in ('HERMES_SESSION_SOURCE', 'HERMES_TENANT', 'TERMINAL_CWD'):
             os.environ.pop(key, None)
-        return asyncio.run(run(params, board_db))
+        _install_sigterm_checkpoint(params, board_db, workspace)
+        return asyncio.run(run(params, board_db, workspace))
     except (KeyError, ValueError, OSError) as exc:
         print(f'Kanban owner refused: {exc}', file=sys.stderr)
         return 1
+
+
+def _install_sigterm_checkpoint(params, board_db, workspace):
+    """Write the last checkpoint on the cap's SIGTERM, before the process is terminated.
+
+    The dispatcher's cap path is SIGTERM then SIGKILL; the timer already puts a checkpoint on the
+    card, and this closes the window between the last tick and the kill where the platform
+    delivers a catchable SIGTERM at all (nothing catches a Windows TerminateProcess).
+    """
+    import signal
+    from hermes_cli import kanban_checkpoint
+    checkpoints = kanban_checkpoint.RunCheckpoint.from_params(params, board_db, workspace)
+
+    def _on_sigterm(_signum, _frame):
+        checkpoints.finish('sigterm')
+        # Default disposition, so the exit status still says "terminated by SIGTERM".
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError, AttributeError):
+        pass  # not the main thread, or a platform without catchable SIGTERM: the timer stands
 
 
 if __name__ == '__main__':
