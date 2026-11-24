@@ -8,7 +8,11 @@ still holds the claim.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import signal
+import sqlite3
 import time
 from pathlib import Path
 
@@ -16,6 +20,7 @@ import pytest
 
 from hermes_cli import kanban_checkpoint as kc
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_worker_client as wcc
 
 LOCK = "host:4242"
 
@@ -299,3 +304,104 @@ def test_short_and_completed_runs_are_not_silent_run_defects():
 
     assert _diagnose(short, []) == []
     assert _diagnose(completed, []) == []
+
+
+# --- a checkpoint is a record, never a participant -----------------------------------------
+
+
+def _capture_checkpoint(monkeypatch):
+    """Run the real ``run()`` drive and hand the test the checkpoint instance it built."""
+    async def clean_drive(_params, _board_db):
+        return 0
+
+    made = {}
+    real = kc.RunCheckpoint.from_params
+
+    def capture(cls, params, board_db, workspace=None):
+        cp = real(params, board_db, workspace)
+        made["cp"] = cp
+        return cp
+
+    monkeypatch.setattr(wcc, "_drive_claim", clean_drive)
+    monkeypatch.setattr(kc.RunCheckpoint, "from_params", classmethod(capture))
+    return wcc, made
+
+
+def test_a_missing_board_db_never_changes_the_run_exit(tmp_path, monkeypatch):
+    """A facts-read failure on an absent board is recorded, not raised out of the run.
+
+    ``RunCheckpoint._db`` must not create the file it did not find: the 0-byte DB a bare
+    ``sqlite3.connect`` leaves behind is exactly how a bookkeeping error became a dead run.
+    """
+    wcc, made = _capture_checkpoint(monkeypatch)
+    board = tmp_path / "absent.db"
+    params = {"task_id": "t_card", "run_id": 1, "claim_lock": LOCK}
+
+    assert asyncio.run(wcc.run(params, str(board), str(tmp_path))) == 0
+
+    assert not board.exists(), "a checkpoint must never create a board it did not find"
+    assert "refusing to create" in (made["cp"]._last_error or "")
+
+
+def test_a_board_without_task_events_never_changes_the_run_exit(tmp_path, monkeypatch):
+    """A pre-``task_events`` schema is a refusal, not a run-killing exception."""
+    wcc, made = _capture_checkpoint(monkeypatch)
+    board = tmp_path / "pre_schema.db"
+    conn = sqlite3.connect(str(board))
+    try:
+        conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY)")
+        conn.commit()
+    finally:
+        conn.close()
+    params = {"task_id": "t_card", "run_id": 1, "claim_lock": LOCK}
+
+    assert asyncio.run(wcc.run(params, str(board), str(tmp_path))) == 0
+
+    assert "task_events" in (made["cp"]._last_error or "")
+
+
+def test_sigterm_checkpoint_failure_still_restores_sig_dfl(monkeypatch):
+    """A failing checkpoint must not skip the default disposition (that is SIGKILL, not SIGTERM)."""
+    class _Raising:
+        def finish(self, _reason):
+            raise RuntimeError("board vanished under the worker")
+
+    monkeypatch.setattr(kc.RunCheckpoint, "from_params",
+                        classmethod(lambda cls, *a, **k: _Raising()))
+    calls = {}
+
+    def fake_signal(sig, handler):
+        calls["signal"] = (sig, handler)
+
+    kills = []
+    monkeypatch.setattr(signal, "signal", fake_signal)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: kills.append((pid, sig)))
+
+    wcc._install_sigterm_checkpoint(
+        {"task_id": "t_card", "run_id": 1, "claim_lock": LOCK}, "board.db", None)
+    handler = calls["signal"][1]
+
+    handler(signal.SIGTERM, None)  # must not propagate
+
+    assert calls["signal"] == (signal.SIGTERM, signal.SIG_DFL)
+    assert kills == [(os.getpid(), signal.SIGTERM)]
+
+
+def test_a_locked_board_still_contains_the_checkpoint_failure(board, tmp_path):
+    """Today's contained write half must stay contained: recorded, no raise, no partial write."""
+    cp = writer(board, tmp_path)
+    blocker = kbc.connect(Path(board))
+    try:
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute("UPDATE tasks SET title = title WHERE id = 't_card'")
+
+        assert cp.write("timer") is None
+        assert "locked" in (cp._last_error or "")
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+
+    assert comments(board) == []
+    # Once the lock clears the record lands, and it carries the failure it survived.
+    assert cp.write("timer") is not None
+    assert "last checkpoint error" in comments(board)[-1]
