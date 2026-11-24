@@ -145,10 +145,33 @@ class RunCheckpoint:
     def _db(self):
         """A short-lived direct connection: the checkpoint must not pay for the board's
         corruption probe / init lock every ten minutes, and it holds the write lock only for the
-        handful of statements below."""
+        handful of statements below.
+
+        It also never brings a board into existence and never queries a schema it has not
+        checked: a recorder that creates a 0-byte DB (or asks a pre-``task_events`` file for a
+        table) turns a bookkeeping error into a run failure. ``mode=rw`` refuses an absent path
+        and the ``sqlite_master`` probe refuses a missing schema — the same two refusals
+        ``kanban_db_connect.connect`` applies, without its init writes.
+        """
         import sqlite3
-        conn = sqlite3.connect(self.board_db, timeout=5.0, isolation_level=None)
-        conn.execute("PRAGMA busy_timeout=5000")
+        path = Path(self.board_db)
+        if not path.exists():
+            raise RuntimeError(f"kanban board DB absent: {path}; refusing to create it")
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True,
+                               timeout=5.0, isolation_level=None)
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+            present = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN ('tasks', 'task_events')")}
+            missing = {"tasks", "task_events"} - present
+            if missing:
+                raise RuntimeError(
+                    f"kanban board schema absent ({', '.join(sorted(missing))} missing): "
+                    f"{path}; refusing to use it")
+        except Exception:
+            conn.close()
+            raise
         return conn
 
     def _facts(self) -> dict:
@@ -188,22 +211,27 @@ class RunCheckpoint:
 
         Suppressed when this is a timer tick past ``MAX_TIMER_CHECKPOINTS``, when the caller no
         longer holds the claim (run ended, card settled by its own handoff, card re-claimed, task
-        archived), or on any failure — a checkpoint must never take a run down with it.
+        archived), or on any failure — including a facts read that cannot reach the board. A
+        checkpoint must never take a run down with it.
 
         The sequence number is seeded from the checkpoints this attempt already left, so a second
         writer for the same run (the SIGTERM hook builds its own instance) continues the record
         instead of restarting it at 1.
         """
-        facts = self._facts()
         with self._lock:
             if reason == "timer":
                 # Bound the record on a runaway run; a stalled run still gets a line every tick
                 # until the bound, which is the point (silence is the defect being repaired).
                 if self._timer_writes >= MAX_TIMER_CHECKPOINTS:
                     return None
-            seq = max(self._seq, int(facts.get("prior_checkpoints") or 0)) + 1
-            body = self._body(reason, facts, seq)
             try:
+                # Inside the guard: a facts-read failure (absent board, pre-``task_events``
+                # schema, truncated restore) is a checkpoint failure like any other, never a
+                # raise out of ``write`` — the caller sits in a ``finally`` where a raise would
+                # replace the run's return value.
+                facts = self._facts()
+                seq = max(self._seq, int(facts.get("prior_checkpoints") or 0)) + 1
+                body = self._body(reason, facts, seq)
                 conn = self._db()
                 try:
                     conn.execute("BEGIN IMMEDIATE")

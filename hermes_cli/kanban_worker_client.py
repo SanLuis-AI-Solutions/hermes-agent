@@ -77,8 +77,13 @@ async def run(params, board_db, workspace=None):
     finally:
         ticker.cancel()
         # Synchronous by design: the last checkpoint has to be on the card before a SIGKILL that
-        # may already be queued, so this path must not await.
-        checkpoints.finish(reason)
+        # may already be queued, so this path must not await. The guard is the rule, not a
+        # precaution: a raise in a ``finally`` replaces the run's return value, and a checkpoint
+        # is a record of the run, never a participant in it.
+        try:
+            checkpoints.finish(reason)
+        except Exception:
+            pass
 
 
 async def _drive_claim(params, board_db):
@@ -230,7 +235,12 @@ def _install_sigterm_checkpoint(params, board_db, workspace):
     checkpoints = kanban_checkpoint.RunCheckpoint.from_params(params, board_db, workspace)
 
     def _on_sigterm(_signum, _frame):
-        checkpoints.finish('sigterm')
+        try:
+            checkpoints.finish('sigterm')
+        except Exception:
+            # Never let the record skip the restore: SIG_DFL plus the re-raise is what keeps the
+            # cap's kill a clean SIGTERM instead of a SIGKILL after the grace window.
+            pass
         # Default disposition, so the exit status still says "terminated by SIGTERM".
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         os.kill(os.getpid(), signal.SIGTERM)
