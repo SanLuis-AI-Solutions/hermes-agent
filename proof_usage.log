@@ -1,0 +1,74 @@
+PASS clean.checkpoint_written: mid={'schema': 'kanban-run-usage-v1', 'status': 'running', 'source': 'agent-session', 'total_tokens': 120000, 'prompt_tokens': 90000, 'completion_tokens': 30000, 'cache_read_tokens': 0, 'cache_write_tokens': 0, 'api_calls': 12, 'model': 'deepseek-v4.1-flash:1017', 'provider': 'ollama-cloud', 'measured_at': 1795538579, 'cost_usd': None}
+PASS clean.final: {'schema': 'kanban-run-usage-v1', 'status': 'final', 'source': 'agent-session', 'total_tokens': 120000, 'prompt_tokens': 90000, 'completion_tokens': 30000, 'cache_read_tokens': 0, 'cache_write_tokens': 0, 'api_calls': 12, 'model': 'deepseek-v4.1-flash:1017', 'provider': 'ollama-cloud', 'measured_at': 1795538579, 'cost_usd': None}
+PASS capped.partial_kept: {'schema': 'kanban-run-usage-v1', 'status': 'partial', 'source': 'agent-session', 'total_tokens': 90407, 'prompt_tokens': 50749, 'completion_tokens': 39658, 'cache_read_tokens': 0, 'cache_write_tokens': 0, 'api_calls': 37, 'model': 'deepseek-v4.1-flash:1017', 'provider': 'ollama-cloud', 'measured_at': 1795538579, 'cost_usd': None, 'partial_reason': 'run ended as timed_out after the last checkpoint; tokens after it are not measured', 'elapsed_seconds': 1555}
+PASS crashed.partial_kept: {'schema': 'kanban-run-usage-v1', 'status': 'partial', 'source': 'agent-session', 'total_tokens': 25198, 'prompt_tokens': 20520, 'completion_tokens': 4678, 'cache_read_tokens': 0, 'cache_write_tokens': 0, 'api_calls': 8, 'model': 'deepseek-v4.1-flash:1017', 'provider': 'ollama-cloud', 'measured_at': 1795538579, 'cost_usd': None, 'partial_reason': 'run ended as crashed after the last checkpoint; tokens after it are not measured'}
+PASS unmeasured.unknown_not_zero: {'schema': 'kanban-run-usage-v1', 'status': 'unknown', 'source': 'dispatcher', 'total_tokens': None, 'prompt_tokens': None, 'completion_tokens': None, 'api_calls': None, 'model': None, 'provider': None, 'measured_at': 1795538579, 'cost_usd': None, 'reason': 'no usage checkpoint was written before the run ended as crashed'}
+PASS stale.refused: wrote=False usage={'schema': 'kanban-run-usage-v1', 'status': 'final', 'source': 'agent-session', 'total_tokens': 120000, 'prompt_tokens': 90000, 'completion_tokens': 30000, 'cache_read_tokens': 0, 'cache_write_tokens': 0, 'api_calls': 12, 'model': 'deepseek-v4.1-flash:1017', 'provider': 'ollama-cloud', 'measured_at': 1795538579, 'cost_usd': None}
+
+DB: C:\Users\ninef\AppData\Local\Temp\kanban-usage-proof-rqw4wm7l\board.db
+{
+  "clean": {
+    "schema": "kanban-run-usage-v1",
+    "status": "final",
+    "source": "agent-session",
+    "total_tokens": 120000,
+    "prompt_tokens": 90000,
+    "completion_tokens": 30000,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "api_calls": 12,
+    "model": "deepseek-v4.1-flash:1017",
+    "provider": "ollama-cloud",
+    "measured_at": 1795538579,
+    "cost_usd": null
+  },
+  "capped": {
+    "schema": "kanban-run-usage-v1",
+    "status": "partial",
+    "source": "agent-session",
+    "total_tokens": 90407,
+    "prompt_tokens": 50749,
+    "completion_tokens": 39658,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "api_calls": 37,
+    "model": "deepseek-v4.1-flash:1017",
+    "provider": "ollama-cloud",
+    "measured_at": 1795538579,
+    "cost_usd": null,
+    "partial_reason": "run ended as timed_out after the last checkpoint; tokens after it are not measured",
+    "elapsed_seconds": 1555
+  },
+  "crashed": {
+    "schema": "kanban-run-usage-v1",
+    "status": "partial",
+    "source": "agent-session",
+    "total_tokens": 25198,
+    "prompt_tokens": 20520,
+    "completion_tokens": 4678,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "api_calls": 8,
+    "model": "deepseek-v4.1-flash:1017",
+    "provider": "ollama-cloud",
+    "measured_at": 1795538579,
+    "cost_usd": null,
+    "partial_reason": "run ended as crashed after the last checkpoint; tokens after it are not measured"
+  },
+  "unmeasured": {
+    "schema": "kanban-run-usage-v1",
+    "status": "unknown",
+    "source": "dispatcher",
+    "total_tokens": null,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "api_calls": null,
+    "model": null,
+    "provider": null,
+    "measured_at": 1795538579,
+    "cost_usd": null,
+    "reason": "no usage checkpoint was written before the run ended as crashed"
+  }
+}
+
+RESULT: ALL PASS

@@ -205,6 +205,15 @@ def record_response_usage(
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+    # Kanban run costing: a dispatcher-owned worker stamps its cumulative session
+    # tokens onto its own open run row here, after every folded response. This is
+    # what lets a run that hits its cap or crashes still report what it consumed —
+    # a completion-only stamp would record nothing for exactly the wasted runs.
+    try:
+        from agent.kanban_run_usage import checkpoint_run_usage
+        checkpoint_run_usage(agent)
+    except Exception as _usage_exc:  # accounting must never abort a model turn
+        logger.debug("kanban run usage checkpoint skipped: %s", _usage_exc)
     # Rolling history for status-bar averages (last 10).
     with suppress(Exception):
         hist = getattr(agent, "_api_latency_history", None)
