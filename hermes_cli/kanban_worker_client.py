@@ -22,6 +22,12 @@ from typing import Optional
 # ``OWNER_WAIT_S`` is the longest the owner may stay silent between answers before the worker
 # gives up (the first ``kanban.run`` answer has its own wait, ``admission_answer_budget``).
 OWNER_WAIT_S = 180.0
+# An ``unknown`` receipt is the owner's verdict on this attempt's turn (it ended unreadable), not on
+# the card: the row can still be resolved to ``terminal`` while this attempt is alive, and then the
+# same attempt finishes normally. So ask the owner once more instead of dying on the first scar.
+# A second ``unknown`` is final: ``request_id`` is the attempt (board, task, run), so the redial
+# re-submits the same admission and no further dial can change its status.
+UNKNOWN_REDIAL_LIMIT = 1
 # Past the board lock wait: the owner's session setup and receipt before and after the write.
 ADMISSION_ANSWER_MARGIN_S = 60.0
 
@@ -87,6 +93,7 @@ async def _drive_claim(params, board_db):
     # wait is bounded from the owner's last answer: an owner that keeps answering keeps the
     # worker, and one that stays silent for ``OWNER_WAIT_S`` fails the worker honestly.
     claim = _Claim(answered=time.monotonic())
+    unknown_redials = 0
     failures = 0
     while True:
         seen = claim.answered
@@ -116,6 +123,14 @@ async def _drive_claim(params, board_db):
                     f' (HTTP {status})' if status else '')
                 raise GatewayClientError(f'Kanban owner silent for {claim.silent_for():.0f}s: {detail}') from exc
         else:
+            if receipt['status'] == 'unknown' and unknown_redials < UNKNOWN_REDIAL_LIMIT:
+                # Ask once more before failing the attempt. Dropping the admission id makes the
+                # next dial take ``_await_receipt``'s submit branch (``kanban.run``) instead of
+                # re-reading a receipt already known to be ``unknown``; that answer resets the
+                # silence clock exactly as any other owner answer does.
+                unknown_redials += 1
+                claim.session_id = claim.admission_id = None
+                continue
             return _exit_code(receipt, params, board_db)
         failures = 1 if claim.answered != seen else failures + 1
         # Jittered (1-2 s first, up to 16 s): workers of one dead owner do not all redial, and so
