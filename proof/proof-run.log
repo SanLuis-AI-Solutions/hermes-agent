@@ -1,0 +1,33 @@
+subject: kanban_checkpoint.py sha256=a22ab1064c698d896dfc679752cdd89bdc7985c4db8d4ff22aed491f9b4aec79
+compressed timing: interval 2s / cap 8s (a real run: 600s interval / 2400s cap)
+
+=== A. over-cap run, hard-killed at the cap (TerminateProcess: no catchable handler) ===
+cap reached after 8s; worker pid 135044 alive=True
+worker exit code 1 (killed, no orderly exit)
+checkpoints on the card after the kill: 3  (event kinds: {"heartbeat": 1, "run_checkpoint": 3})
+named artifact present: True -> C:\Users\ninef\AppData\Local\Temp\checkpoint-proof-ot5r87bd\ws-overcap\artifact-report.md (64 bytes)
+--- last checkpoint as the card shows it ---
+<!-- hermes-run-checkpoint v1 --> run=1 seq=3 reason=timer
+run checkpoint 3 · +0m06s · in flight
+board: 1 heartbeat, last: training epoch 3/50
+written this run: artifact-report.md, ready.txt, _worker.py
+--- first checkpoint (proves the timer, not the exit path, wrote it) ---
+run checkpoint 1 · +0m02s · in flight
+RESULT A: PASS
+
+=== B. clean run, no kill: checkpoints must not clutter the record ===
+worker exit code 0; comments on the card: 1
+checkpoints: 1 (event kinds: {"heartbeat": 1, "run_checkpoint": 1})
+<!-- hermes-run-checkpoint v1 --> run=1 seq=1 reason=exit
+run checkpoint 1 · +0m02s · finished
+board: 1 heartbeat, last: training epoch 3/50
+written this run: clean-output.txt, ready.txt, _worker.py
+RESULT B: PASS
+
+=== C. dispatcher backstop: silent run is surfaced, owned run is not duplicated ===
+cutoff lines written for a silent run: 1
+run 1 was cut off at its cap: elapsed 2412s > limit 2400s (SIGTERM then SIGKILL). The worker left no checkpoint on this card, so this record is the only evidence of the attempt. Suspicious by definition: a long run that writes nothing to its own card is a runtime defect, not a quiet zero.
+foreign claim_lock write returned None (None = refused, guard intact)
+RESULT C: PASS
+
+OVERALL: PASS
