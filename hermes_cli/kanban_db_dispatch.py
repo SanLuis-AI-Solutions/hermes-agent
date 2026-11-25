@@ -150,6 +150,17 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    deferred_update_lock: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` cards left in ``ready``/``review`` because an install
+    update fenced this checkout for the whole tick: a live update marker, or a
+    process the update started that still holds the checkout kernel lock.
+
+    Deferred is not failed. The card was never attempted, so the tick writes no
+    task state for it — no ``consecutive_failures``, no ``last_failure_error``, no
+    retry consumed, and no per-card event. A worker spawned into the fenced window
+    dies at the owner heartbeat (``Gateway draining: update_paused``) and burns its
+    whole budget learning that, so the tick spawns nothing and reports the hold
+    here instead of a bare zero-spawn count."""
 
 
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
@@ -173,6 +184,9 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
+        if res.deferred_update_lock:
+            counts["deferred_update_lock"] = (
+                counts.get("deferred_update_lock", 0) + len(res.deferred_update_lock))
         if res.memory_pressure:
             pressure = res.memory_pressure
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
@@ -2324,6 +2338,74 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     return name
 
 
+def _update_lock_deferral() -> Optional[tuple[Optional[int], str]]:
+    """The install update fencing this tick — ``(marker owner pid, reason)`` — or ``None``.
+
+    Asked ONCE per dispatch tick, never per card, and with the same two predicates
+    ``gateway_runtime._update_fenced`` fences a launch with: a LIVE marker
+    (:func:`update_lock.read_live_update`), or the checkout kernel lock held
+    (:func:`update_lock.checkout_lock_held`) — the lock being the guard for a dead or
+    unreadable marker whose killed updater's tree still runs (contract R6). Both are
+    consulted because a marker-only claim is real: ``UpdateLock(checkout_first=False)``
+    (venv_sync) claims the marker before it takes the checkout lock for its own
+    mutation, and the launch gate fences that window too.
+
+    Read-only and never raises: an unjudgeable state defers nothing, so a broken probe
+    cannot wedge the dispatcher (the launch gate remains the hard fence).
+
+    ``owner_pid`` is ``None`` when the marker is unreadable or names a dead owner but a
+    process the update started still holds the checkout.
+    """
+    try:
+        from hermes_cli import update_lock
+    except Exception as exc:  # health: allow BLE001 -- a diagnostic probe must not wedge dispatch
+        _kb._log.debug("kanban dispatch: update-lock probe unavailable: %s", exc)
+        return None
+    try:
+        holder = update_lock.read_live_update()
+        locked = update_lock.checkout_lock_held()
+    except Exception as exc:  # health: allow BLE001 -- same: fail open, the launch gate still fences
+        _kb._log.debug("kanban dispatch: could not judge the install update lock: %s", exc)
+        return None
+    if holder is None and not locked:
+        return None
+    owner = holder.pid if holder is not None and holder.pid else None
+    if holder is not None:
+        reason = "install update in progress"
+    else:
+        reason = "install update in progress (its processes still hold the checkout)"
+    return owner, f"{reason} (pid {owner})" if owner else reason
+
+
+def _defer_update_locked_tick(
+    conn: sqlite3.Connection,
+    result: DispatchResult,
+    deferral: tuple[Optional[int], str],
+) -> DispatchResult:
+    """Report a tick the install update fenced: every card stays where it is.
+
+    Nothing was attempted, so nothing may be penalised: no failure counter, no
+    ``last_failure_error``, no retry consumed, and — deliberately — no per-card event,
+    because one event per card per tick is the noise this guard exists to remove.
+    The fact is recorded at the board level instead: one INFO line naming the marker's
+    owner pid and the number of cards deferred, plus ``DispatchResult.deferred_update_lock``
+    so the CLI / gateway / dashboard can say "waiting for an install" rather than
+    "0 spawned" with no explanation.
+    """
+    owner, reason = deferral
+    rows = _lane_rows(conn, "ready")
+    if review_dispatch_enabled():
+        rows = rows + _lane_rows(conn, "review")
+    for row in rows:
+        result.deferred_update_lock.append((row["id"], reason))
+    _kb._log.info(
+        "kanban dispatch: install update in progress (marker owner pid %s); "
+        "deferred %d card(s) to a later tick and spawned none",
+        "unknown" if owner is None else owner, len(result.deferred_update_lock),
+    )
+    return result
+
+
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
 # critical section (#56066 sweeper finding / #64231 disposition): a slow subscriber must never extend the
 # lock hold and stall a sibling dispatcher's tick.
@@ -2348,6 +2430,14 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    # The install update is a whole-host fence, so it is asked ONCE here — before the
+    # reclaim phase and before any lane is walked. Spawning a worker into the window
+    # only buys a 183s death at the owner heartbeat ("Gateway draining: update_paused"),
+    # and reclaim bookkeeping run inside the window would have nothing to free: nothing
+    # is spawning. Deferred cards keep their status and their retry budget untouched.
+    deferral = _update_lock_deferral()
+    if deferral is not None:
+        return _defer_update_locked_tick(conn, result, deferral)
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
