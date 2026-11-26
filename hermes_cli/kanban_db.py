@@ -1869,6 +1869,22 @@ def _end_run(
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    # Settle the run's token usage before writing: a mid-run checkpoint becomes
+    # final (clean handoff) or partial (cap/crash/reclaim), and a run with no
+    # checkpoint records an explicit unknown with its reason. A silent zero would
+    # price a wasted run as free.
+    from agent.kanban_run_usage import normalize_usage_for_close
+    prior = conn.execute(
+        "SELECT metadata FROM task_runs WHERE id = ? AND ended_at IS NULL", (run_id,)
+    ).fetchone()
+    prior_meta: Optional[dict] = None
+    if prior is not None and prior[0]:
+        try:
+            prior_meta = json.loads(prior[0])
+        except (TypeError, ValueError):
+            prior_meta = None
+    metadata = normalize_usage_for_close(
+        prior_meta if isinstance(prior_meta, dict) else None, metadata, outcome)
     conn.execute(
         """
         UPDATE task_runs
