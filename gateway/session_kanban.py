@@ -410,9 +410,18 @@ def _stored_conversation(agent):
 
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
-    skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
-    if missing and not loaded:
-        raise ValueError('kanban_skills_unavailable')
+    skills, _loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
+    if missing:
+        # A skill that does not resolve is a SMALLER failure than a dead worker: the card body, the
+        # handoff and the kanban lifecycle prompt are already in the turn, so warn and run it. Raising
+        # here (previously ``kanban_skills_unavailable``) exits 1 before any model call, which the board
+        # books as a crash with no verdict (t_9be7c06e runs 1039/1041/1045/1046, pids 134764/152004/
+        # 154060/154416). The turn must still fail loudly when the *turn* fails — see the except branch
+        # in ``_run_worker_turns`` — but an unresolvable preload must not be fatal by itself.
+        import logging
+        logging.getLogger(__name__).warning(
+            'kanban worker %s: skill(s) unavailable, continuing without: %s',
+            context.get('task_id'), ', '.join(str(name) for name in missing))
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 
