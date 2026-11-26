@@ -1498,13 +1498,60 @@ def _record_task_failure(
         return True
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *, run_id=None, claim_lock=None) -> None:
+def _env_probe(env: Mapping[str, str]) -> dict:
+    """The four strings that answer "which process set this?" for a spawned worker.
+
+    Persisted beside ``metadata.pid`` on the run row. Deliberately narrow — no
+    tokens, no full environ — and every value is a ``str``: a value the spawn
+    did not set is ``""``, never an absent key, so a later reader can tell
+    "unset" from "not probed".
+
+    ``scratch_dir_effective`` is what ``get_scratch_dir()`` resolves to for THIS
+    worker's profile (``HERMES_HOME``), which can differ from the dispatcher's
+    own scratch root. It is best-effort: a probe failure must never fail a spawn.
+    """
+    def first(*names: str) -> str:
+        for name in names:
+            value = env.get(name)
+            if value:
+                return str(value)
+        return ""
+
+    scratch_effective = ""
+    try:
+        from hermes_constants import get_scratch_dir
+        # prune=False: a probe must not delete files as a side effect of a spawn.
+        scratch_effective = str(get_scratch_dir(env.get("HERMES_HOME") or None, prune=False))
+    except Exception:
+        scratch_effective = ""
+    return {
+        "hermes_home": str(env.get("HERMES_HOME") or ""),
+        "hermes_scratch_dir": str(env.get("HERMES_SCRATCH_DIR") or ""),
+        "tmpdir": first("TMPDIR", "TMP", "TEMP"),
+        "scratch_dir_effective": scratch_effective,
+    }
+
+
+def _merge_run_metadata(conn: sqlite3.Connection, run_id: int, patch: dict) -> None:
+    """Merge ``patch`` into one run's ``metadata`` JSON. Caller owns the txn."""
+    row = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (int(run_id),)).fetchone()
+    if row is None:
+        return
+    current = _kb._json_dict(row["metadata"])
+    current.update(patch)
+    conn.execute("UPDATE task_runs SET metadata = ? WHERE id = ?",
+                 (_kb._json_or_null(current), int(run_id)))
+
+
+def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *, run_id=None, claim_lock=None,
+                    env_probe: Optional[dict] = None) -> None:
     """Publish the launcher only while this claim has no executing worker yet, together with its
     restart-stable fingerprint (``_process_fingerprint``); the ``spawned`` event carries both. The
     fingerprint is what lets every later liveness/kill decision tell OUR worker from a process that
     recycled the PID after a reboot. A failed capture is persisted as ``UNVERIFIED_WORKER_FINGERPRINT``,
     never NULL: NULL is the legacy pre-fingerprint row whose bare-PID kill authority a new spawn must
-    not inherit."""
+    not inherit. ``env_probe`` lands on the run's ``metadata`` in the same txn, so the environment the
+    worker was actually handed is readable from the record it was handed."""
     started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
     with _kb.write_txn(conn):
         if run_id is None:
@@ -1518,6 +1565,8 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *, run_id=
             conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
                          (int(pid), started_at, run_id))
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+        if isinstance(env_probe, dict) and run_id is not None:
+            _merge_run_metadata(conn, int(run_id), {"env_probe": {str(k): str(v) for k, v in env_probe.items()}})
 
 
 def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: int) -> bool:
@@ -2156,7 +2205,9 @@ def _dispatch_lane_task(
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
-            _set_worker_pid(conn, claimed.id, int(pid), run_id=claimed.current_run_id, claim_lock=claimed.claim_lock)
+            _set_worker_pid(conn, claimed.id, int(pid), run_id=claimed.current_run_id,
+                            claim_lock=claimed.claim_lock,
+                            env_probe=getattr(claimed, "env_probe", None))
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
         _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
         # consecutive_failures is deliberately NOT reset here: resetting on
@@ -2819,6 +2870,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     cmd = _restart_safe_worker_argv(task, cmd)
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
+    # The env is final here: hand the dispatcher what this worker was given, so
+    # "which process set $X?" is answerable from the run row beside its pid
+    # (``_set_worker_pid`` persists it). A custom spawn_fn simply leaves it unset.
+    task.env_probe = _env_probe(env)
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(
