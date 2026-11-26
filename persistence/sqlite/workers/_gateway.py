@@ -21,7 +21,7 @@ from persistence.core.errors import AuthorityRefusal
 from persistence.workers.vocabulary import CHILD_SEPARATOR
 from session_rules.legacy_local import same_owner
 
-from ..authority._runtime import _admission, _epoch, _secret_digest, _session
+from ..authority._runtime import _admission, _epoch, _secret_digest, _session, record_admission_worker
 from ._receipt import apply_worker_receipt
 from ._runtime_workers import compact_terminal_receipts, descendant_range
 
@@ -82,6 +82,10 @@ def reserve_admission_worker(holder, *, epoch, admission_id, principal_id, profi
         conn.execute("INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,adoption_digest) "
                      "VALUES(?,?,'compute',?,?,'registered',?)",
                      (execution_id, sid, epoch, generation, _secret_digest(claim)))
+        # The identity this reservation just proved is the only durable way a later submission can
+        # tell a dead attempt from a running one (``_admission_store.admit_session_input`` reads it
+        # on an unknown row).
+        record_admission_worker(conn, admission_id, pid, birth)
         return scope | {'epoch': epoch}
 
     return holder._execute_write(write)

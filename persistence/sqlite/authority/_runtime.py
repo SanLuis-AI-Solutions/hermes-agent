@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
@@ -27,11 +28,13 @@ from ..conversation._store.terminal import (
 
 __all__ = [
     "ADMISSION_PREFIX",
+    "ADMISSION_WORKER_PREFIX",
     "IDENTITY_PREFIX",
     "REPLACEMENT_PREFIX",
     "RESULT_PREFIX",
     "STEERING",
     "WORKER_PREFIX",
+    "admission_worker_key",
     "check_replaced_input",
     "compact_result",
     "encode_result",
@@ -39,6 +42,7 @@ __all__ = [
     "load_result",
     "refused",
     "replacement_binding",
+    "record_admission_worker",
     "replay_mutation_receipt",
     "retire_replaced_input",
     "retry_terminal_admission",
@@ -127,6 +131,75 @@ def _retire_admission_workers(conn, row, owner_epoch):
         compact_terminal_receipts(conn, execution_id)
     conn.execute(f"UPDATE worker_executions SET status='terminal' WHERE {scope}",
                  (*targets, row['generation'], owner_epoch))
+    # The reservation's private pid/birth is only a loss witness until the admission settles.
+    conn.execute('DELETE FROM state_meta WHERE key=?', (admission_worker_key(row['admission_id']),))
+
+
+#: The managed worker the owner reserved for one admission: ``{"pid", "birth"}`` under this key.
+#: Written with the reservation that proved the worker's identity
+#: (``persistence.sqlite.workers._gateway.reserve_admission_worker``) and read on a later submission
+#: of the same request, so a dead attempt is replaced instead of handed back as a refusal.
+ADMISSION_WORKER_PREFIX = 'gateway.admission_worker.v1.'
+
+
+def admission_worker_key(admission_id: str) -> str:
+    return ADMISSION_WORKER_PREFIX + admission_id
+
+
+def record_admission_worker(conn, admission_id: str, pid: int, birth: float) -> None:
+    """Inside the reservation's own write: the worker this admission is now served by."""
+    conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
+                 (admission_worker_key(admission_id), _json({'pid': int(pid), 'birth': birth})))
+
+
+def _admission_worker_dead(conn, admission_id: str) -> bool:
+    """True only when the worker reserved for *admission_id* is provably gone.
+
+    A recycled pid is not that worker: the birth recorded at reservation (``worker_birth``) must
+    still match. No record, or a process this host cannot identify, is not a verdict -- the caller
+    keeps the existing row, exactly as before.
+    """
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                         (admission_worker_key(admission_id),)).fetchone()
+    if saved is None:
+        return False
+    try:
+        record = json.loads(saved[0])
+        pid, birth = int(record['pid']), record['birth']
+    except (TypeError, ValueError, KeyError):
+        return False
+    import psutil
+    try:
+        proc = psutil.Process(pid)
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return True
+        from hermes_cli.process_identity import worker_birth
+        return worker_birth(proc) != birth
+    except psutil.NoSuchProcess:
+        return True
+    except (psutil.Error, OSError):
+        return False
+
+
+def _readmit_unknown(conn, old, *, epoch: int, payload_json: str, digest: str, intent: str) -> dict:
+    """Supersede a lost attempt in place: keep *old* as a tombstone, admit a successor at its seq.
+
+    The dead row would otherwise hold the ``UNIQUE (principal, target, request)`` key forever and
+    freeze the FIFO at a scar nobody can settle. Retaining it verbatim (still ``unknown``, still
+    readable through ``get_session_admission``) keeps the record; reusing its ``seq`` keeps FIFO
+    order for anything already queued behind the attempt.
+    """
+    conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
+                 (ADMISSION_PREFIX + old['admission_id'], _json(dict(old))))
+    conn.execute('DELETE FROM session_admissions WHERE admission_id=?', (old['admission_id'],))
+    conn.execute('DELETE FROM state_meta WHERE key=?', (admission_worker_key(old['admission_id']),))
+    admission_id = uuid.uuid4().hex
+    conn.execute("""INSERT INTO session_admissions(seq,admission_id,request_id,principal_id,
+        target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
+        VALUES(?,?,?,?,?,?,?,?,?,'queued',?)""",
+        (old['seq'], admission_id, old['request_id'], old['principal_id'], old['target_session_id'],
+         json.dumps([old['target_session_id']]), payload_json, digest, intent, epoch))
+    return _row(_admission(conn, admission_id))
 
 
 def _row(row):

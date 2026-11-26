@@ -21,6 +21,8 @@ from ._admission_owner import authorize_admission, close_discarded_turn
 from ._runtime import (
     _CANCEL_QUEUED,
     _admission,
+    _admission_worker_dead,
+    _readmit_unknown,
     _epoch,
     _json,
     _requeue_transfer,
@@ -83,6 +85,14 @@ def admit_session_input(holder, *, epoch: int, principal_id: str, session_id: st
         if old is not None:
             if old['payload_digest'] != digest:
                 raise AuthorityRefusal('admission_conflict', **ADMITTED_REQUEST_CONFLICT)
+            if old['status'] == 'unknown' and _admission_worker_dead(conn, old['admission_id']):
+                # The attempt is lost and the worker that served it is gone: this submission is a
+                # new attempt at the same request, not a replay of a dead one, so it is a new write
+                # and passes the owner's gate. A live worker (or no proof of its identity) keeps
+                # today's behaviour below.
+                raise_gate(gate)
+                return _readmit_unknown(conn, old, epoch=epoch, payload_json=encoded,
+                                        digest=digest, intent=intent), True
             if replaces is not None:
                 check_replaced_input(conn, replaces.admission_id,
                                      replacement_binding(principal_id, session_id, request_id))
