@@ -2352,8 +2352,11 @@ def _update_lock_deferral() -> Optional[tuple[Optional[int], str]]:
     (venv_sync) claims the marker before it takes the checkout lock for its own
     mutation, and the launch gate fences that window too.
 
-    Read-only and never raises: an unjudgeable state defers nothing, so a broken probe
-    cannot wedge the dispatcher (the launch gate remains the hard fence).
+    Never raises, and never clears a live marker: an unjudgeable state defers nothing, so a
+    broken probe cannot wedge the dispatcher (the launch gate remains the hard fence). It is
+    not purely read-only — ``read_live_update`` reclaims a DEAD marker through
+    ``_reclaim_dead`` (``update_lock.py``), the same launch-time reclaim the gateway
+    describes, so a marker whose owner is gone may be removed by asking.
 
     ``owner_pid`` is ``None`` when the marker is unreadable or names a dead owner but a
     process the update started still holds the checkout.

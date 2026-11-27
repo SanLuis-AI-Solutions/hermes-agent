@@ -11,10 +11,15 @@ On v0.23.4 the code that carried that guard does not exist: ``_ctx_resume`` is g
 ``hermes_cli/`` and ``tests/`` (the feature that added it, c7a1b4e0b4d, was never part of
 the replay onto v0.23.4), and the retry/resume rendering that survives upstream is
 ``_ctx_prior_attempts`` — called unguarded at ``kanban_db.py:build_worker_context``.
-So today the rule holds by construction: no handler is there to eat the assertion. The
-tests below pin that construction, because the rule is what was approved and the
-construction is all that is left of it. A future ``try/except Exception`` around any
-context render turns these red, which is the point.
+
+Scope, stated precisely, because the first version of this docstring overclaimed it and a
+reviewer caught it: these tests pin the ABSENCE of a handler at two places only — inside
+``build_worker_context`` itself, and at the ``_ctx_prior_attempts`` call boundary. They do
+not prove the render chain is handler-free. A handler inside a helper is invisible here:
+``_ctx_metadata_line`` (``kanban_db_context.py:72``) already carries ``except Exception``
+and sits inside this render. A future ``try/except Exception`` at either pinned place
+turns these red, which is the point; a handler added deeper is not evidence these tests
+would give you.
 """
 
 from __future__ import annotations
